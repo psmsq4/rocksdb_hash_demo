@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Time-ordered vs shuffled input, single-key writes, N writers.
 set -uo pipefail
-bin=$HOME/rocksdb-demo/op_trade_bench/out/op_trade_bench
+bin=${OTB_BIN:-"$(cd "$(dirname "$0")/../.." && pwd)/op_trade_bench/out/op_trade_bench"}
 db=${WORK:-/tmp/otb_work}/sh_db
 rounds=${ROUNDS:-3}
 configs=("head_c1:HEAD:1" "head_c0:HEAD:0" "upstream:UPSTREAM:0" "skiplist_c1:SKIPLIST:1")

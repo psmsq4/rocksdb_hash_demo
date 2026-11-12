@@ -3,7 +3,7 @@
 # branch into $WORK/libs/<name>/librocksdb.so.11, so that op_trade_bench can
 # load any of them with LD_LIBRARY_PATH (its RUNPATH is overridden).
 #
-#   ROCKSDB_ROOT  checkout with the branch (default: ~/rocksdb)
+#   ROCKSDB_ROOT  checkout with the branch (default: ~/rocksdb/rocksdb_hash)
 #   WORK          scratch directory (default: /tmp/otb_work)
 #   JOBS          make -j (default: 3; more needs RAM, about 1GB per job)
 #
@@ -12,7 +12,7 @@
 # wrong), head_memo 2561b92b7, head_single (head_memo plus the reverted
 # single-prefix variant in ../variants).
 set -euo pipefail
-root="${ROCKSDB_ROOT:-$HOME/rocksdb}"
+root="${ROCKSDB_ROOT:-$HOME/rocksdb/rocksdb_hash}"
 work="${WORK:-/tmp/otb_work}"
 jobs="${JOBS:-3}"
 here="$(cd "$(dirname "$0")" && pwd)"

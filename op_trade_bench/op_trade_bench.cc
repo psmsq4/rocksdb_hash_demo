@@ -59,7 +59,14 @@ using ROCKSDB_NAMESPACE::WriteOptions;
 
 namespace {
 
-constexpr const char* kDefaultInput = "/home/psmsq4/tpc-e/flat_out/Trade.txt";
+// $TPCE_DIR/flat_out/Trade.txt, with TPCE_DIR defaulting to $HOME/tpc-e.
+std::string DefaultInput() {
+  if (const char* dir = getenv("TPCE_DIR"); dir != nullptr && *dir != '\0') {
+    return std::string(dir) + "/flat_out/Trade.txt";
+  }
+  const char* home = getenv("HOME");
+  return std::string(home != nullptr ? home : ".") + "/tpc-e/flat_out/Trade.txt";
+}
 constexpr int kTradeColumns = 15;
 constexpr int kTradeIdColumn = 0;
 constexpr int kSymbolColumn = 5;
@@ -459,7 +466,7 @@ void consume_preloaded(DB* db, const WriteOptions& write_options,
 struct Args {
   std::string memtable;
   uint64_t limit = 1000000;
-  std::string input = kDefaultInput;
+  std::string input = DefaultInput();
   std::string db;
   size_t queue = 100000;
   bool disable_wal = false;

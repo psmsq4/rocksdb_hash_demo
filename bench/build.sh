@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Builds the bench programs against a RocksDB checkout's Release shared lib.
-#   ROCKSDB_ROOT  checkout with build-rel/librocksdb.so (default: ~/rocksdb)
+#   ROCKSDB_ROOT  checkout with build-rel/librocksdb.so (default: ~/rocksdb/rocksdb_hash)
 set -euo pipefail
 
-root="${ROCKSDB_ROOT:-$HOME/rocksdb}"
+root="${ROCKSDB_ROOT:-$HOME/rocksdb/rocksdb_hash}"
 here="$(cd "$(dirname "$0")" && pwd)"
 lib="$root/build-rel"
 

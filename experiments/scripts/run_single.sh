@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Compares the memo build with the single-prefix build: flush time and writes.
 set -uo pipefail
-bin=$HOME/rocksdb-demo/op_trade_bench/out/op_trade_bench
+bin=${OTB_BIN:-"$(cd "$(dirname "$0")/../.." && pwd)/op_trade_bench/out/op_trade_bench"}
 libs=${WORK:-/tmp/otb_work}/libs
 db=${WORK:-/tmp/otb_work}/single_db
 

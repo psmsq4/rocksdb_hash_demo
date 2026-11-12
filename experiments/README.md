@@ -8,7 +8,7 @@
 ```bash
 # 비교용 librocksdb.so를 커밋별로 빌드 ($WORK/libs/<이름>/librocksdb.so.11)
 WORK=/tmp/otb_work JOBS=8 experiments/scripts/build_libs.sh
-# op_trade_bench 빌드 (~/rocksdb/build-rel/librocksdb.so에 링크)
+# op_trade_bench 빌드 (~/rocksdb/rocksdb_hash/build-rel/librocksdb.so에 링크)
 op_trade_bench/build.sh
 ```
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Times one explicit flush of a memtable holding LIMIT trades.
 set -uo pipefail
-bin=$HOME/rocksdb-demo/op_trade_bench/out/op_trade_bench
+bin=${OTB_BIN:-"$(cd "$(dirname "$0")/../.." && pwd)/op_trade_bench/out/op_trade_bench"}
 lib=${WORK:-/tmp/otb_work}/libs/head_memo
 rounds=${ROUNDS:-7}
 configs=(UPSTREAM HEAD SKIPLIST)

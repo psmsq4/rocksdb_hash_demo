@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Time one explicit flush of a ~87% full memtable, account key format.
 set -uo pipefail
-bin=$HOME/rocksdb-demo/op_trade_bench/out/op_trade_bench
+bin=${OTB_BIN:-"$(cd "$(dirname "$0")/../.." && pwd)/op_trade_bench/out/op_trade_bench"}
 db=${WORK:-/tmp/otb_work}/bf_db
 rounds=${ROUNDS:-5}
 mems=(HEAD UPSTREAM SKIPLIST)

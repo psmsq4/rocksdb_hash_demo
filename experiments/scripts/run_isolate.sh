@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Times memtable inserts per step: 512MB memtable, no flush, WAL off.
 set -uo pipefail
-bin=$HOME/rocksdb-demo/op_trade_bench/out/op_trade_bench
+bin=${OTB_BIN:-"$(cd "$(dirname "$0")/../.." && pwd)/op_trade_bench/out/op_trade_bench"}
 libs=${WORK:-/tmp/otb_work}/libs
 limit=${LIMIT:-1500000}
 rounds=${ROUNDS:-3}

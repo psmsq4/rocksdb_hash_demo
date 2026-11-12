@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Builds op_trade_bench against a RocksDB checkout's Release shared lib.
-#   ROCKSDB_ROOT  checkout with build-rel/librocksdb.so (default: ~/rocksdb)
+#   ROCKSDB_ROOT  checkout with build-rel/librocksdb.so (default: ~/rocksdb/rocksdb_hash)
 #
 # upstream_hash_skiplist_rep.cc uses RocksDB internal headers, so this uses the
 # same platform defines as the library build. The library is built with
 # -fno-rtti, so classes derived from its types must be too.
 set -euo pipefail
 
-root="${ROCKSDB_ROOT:-$HOME/rocksdb}"
+root="${ROCKSDB_ROOT:-$HOME/rocksdb/rocksdb_hash}"
 here="$(cd "$(dirname "$0")" && pwd)"
 lib="$root/build-rel"
 

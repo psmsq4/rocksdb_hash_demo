@@ -1,6 +1,6 @@
 # HashSkipList 개선 작업 인수인계
 
-작성: 2026-11-12. 이 문서와 두 저장소(`~/rocksdb`, `~/rocksdb-demo`)만으로 작업을 이어갈 수 있도록
+작성: 2026-11-12. 이 문서와 두 저장소(`~/rocksdb/rocksdb_hash`, `~/rocksdb/rocksdb_hash_demo`)만으로 작업을 이어갈 수 있도록
 설계, 측정 결과, 도구 사용법, 남은 일을 정리했습니다. 측정 수치는 모두 아래 "측정 환경"의 WSL
 머신에서 나온 값이므로, 서버로 옮기면 같은 스크립트로 다시 측정해야 합니다.
 
@@ -26,15 +26,15 @@ RocksDB `HashSkipListRep`(prefix hash memtable)의 두 결격 사유를 없앴�
 
 | 무엇 | 경로 | 상태 |
 |---|---|---|
-| 작업 브랜치 | `~/rocksdb`, 브랜치 `hash_skiplist_improvements` | 커밋 4개 + base. **push 안 됨** (origin은 facebook/rocksdb) |
+| 작업 브랜치 | `~/rocksdb/rocksdb_hash`, 브랜치 `hash_skiplist_improvements` | 커밋 4개 + base. **push 안 됨** (origin은 facebook/rocksdb) |
 | base | `e591f5f1a` (2026-11-08 기준 facebook/rocksdb main) | |
-| 시연 앱, 벤치, 실험 | `~/rocksdb-demo` (이 저장소) | |
+| 시연 앱, 벤치, 실험 | `~/rocksdb/rocksdb_hash_demo` (이 저장소) | |
 | TPC-E 데이터 | `~/tpc-e/flat_out/*.txt` (5.7GB, Trade.txt 3.2GB, 28,664,881행) | EGen 5000 customers, scale factor 500, initial trade days 300 (`~/tpc-e/bin/EGenLoaderFrom1To5000.log`) |
 | 과거 과제 보고서 | `~/rocksdb_report/*.pdf` (14팀 1~4차 발표) | 일부 주장은 아래 4절에서 정정 |
 | 연구용 저장소 | `~/oss_bigdata/rocksdb`, 브랜치 `prefix_layer` | 로그, 계측 코드로 오염됨. **쓰지 말 것** |
 | Claude 작업 메모 | `~/.claude/projects/-home-psmsq4-oss-bigdata-rocksdb/memory/` | 서버의 Claude Code에서도 쓰려면 복사 |
 
-## 2. 커밋 (`~/rocksdb`, 오래된 순)
+## 2. 커밋 (`~/rocksdb/rocksdb_hash`, 오래된 순)
 
 | 커밋 | 제목 | 핵심 |
 |---|---|---|
@@ -145,7 +145,7 @@ HEAD는 초당 약 140만 건으로 일정, upstream은 크기가 클수록 느�
 TPC-E Trade.txt를 생산자 → 큐 → 소비자로 RocksDB에 Put한다. 요구사항 원문은 `op_trade_bench/CLAUDE.md`.
 
 ```bash
-op_trade_bench/build.sh          # ~/rocksdb/build-rel/librocksdb.so에 링크, -fno-rtti 필수
+op_trade_bench/build.sh          # ~/rocksdb/rocksdb_hash/build-rel/librocksdb.so에 링크, -fno-rtti 필수
 op_trade_bench/out/op_trade_bench --memtable=HEAD|UPSTREAM|SKIPLIST [옵션]
 ```
 
@@ -170,17 +170,18 @@ op_trade_bench/out/op_trade_bench --memtable=HEAD|UPSTREAM|SKIPLIST [옵션]
 
 ### 5.2 웹 앱 (Spring Boot 3.5.9, Java 21, Gradle 8.10 wrapper)
 ```bash
-./gradlew build && java -jar build/libs/rocksdb-demo-0.1.0.jar   # http://127.0.0.1:8080
+./gradlew build && ~/java21/bin/java -jar build/libs/rocksdb-demo-0.1.0.jar   # http://127.0.0.1:8080
 bench/build.sh                                                     # 메모리/높이 벤치(mem_bench)
 ```
-- `src/main/resources/catalog.json`이 테스트 목록이다. `runnable` 항목은 정의된 명령만 실행하며 한 번에 하나씩 돈다. `${root}`는 `~/rocksdb`, `${bench}`는 `bench/out`이다.
+- 서버에는 JDK 21이 `~/java21`에만 있다. Gradle toolchain은 `~/.gradle/gradle.properties`의 `org.gradle.java.installations.paths`로 찾고, jar는 `~/java21/bin/java`로 실행한다. 다른 경로면 `application.yml`의 `demo.rocksdb-root`도 확인할 것.
+- `src/main/resources/catalog.json`이 테스트 목록이다. `runnable` 항목은 정의된 명령만 실행하며 한 번에 하나씩 돈다. `${root}`는 `~/rocksdb/rocksdb_hash`, `${bench}`는 `bench/out`이다.
 - localhost에만 바인딩된다. 단위 테스트 3개, mem_bench 2개가 실행 가능 항목이다.
 - **카탈로그는 2026-11-10 상태다.** 3.3절 이후 결과(메모, flush, 멀티 스레드, key 형식)는 아직 반영되지 않았다.
 
 ### 5.3 실험 스크립트
 `experiments/README.md` 참고. 라이브러리 빌드는 `experiments/scripts/build_libs.sh`.
 
-### 5.4 RocksDB 빌드와 테스트 (`~/rocksdb`)
+### 5.4 RocksDB 빌드와 테스트 (`~/rocksdb/rocksdb_hash`)
 ```bash
 # Debug(테스트): 기존 build/ 디렉터리, WITH_TESTS, FAIL_ON_WARNINGS
 cd build && make -j3 db_memtable_test prefix_test inlineskiplist_test
@@ -217,11 +218,16 @@ git clang-format   # clang-format 23.1.5가 ~/.local/bin에 있음
 9. (선택) upstream PR. `KeyComparator::user_comparator()` public API 추가가 리뷰 쟁점. 대안은 prefix를 internal key 형식으로 저장해 기존 comparator를 재사용(비교 시 복사 비용).
 
 ## 8. 서버 이전 체크리스트
-- [ ] `~/rocksdb` 브랜치 이동. facebook에는 push 권한이 없으므로 개인 fork에 push하거나
-      `git bundle create hsl.bundle e591f5f1a..hash_skiplist_improvements`로 옮겨 서버의 rocksdb clone(main을 e591f5f1a 이상으로)에서 `git fetch hsl.bundle hash_skiplist_improvements:hash_skiplist_improvements`.
-- [ ] `~/rocksdb-demo` 이동(이 저장소). 원격이 없으니 개인 원격에 push하거나 bundle.
-- [ ] TPC-E 데이터: `~/tpc-e/flat_out` 복사(5.7GB) 또는 서버에서 EGen으로 같은 설정(5000 customers, SF 500, 300 days) 재생성.
-- [ ] 도구: g++ 11+, cmake 3.22+, JDK 21, Docker(Prometheus/Grafana용), python3.
-- [ ] 경로: `op_trade_bench`의 기본 입력이 `/home/psmsq4/tpc-e/flat_out/Trade.txt`로 하드코딩되어 있다(`--input`으로 바꾸거나 상수 수정). 스크립트는 `$HOME/rocksdb-demo`, `$HOME/rocksdb`를 가정한다.
-- [ ] `taskset` 코어 번호를 서버 토폴로지에 맞게 수정.
+서버 경로: RocksDB 브랜치 `~/rocksdb/rocksdb_hash`, 이 저장소 `~/rocksdb/rocksdb_hash_demo`, TPC-E `~/tpc-e`, JDK 21 `~/java21`.
+
+- [x] `~/rocksdb/rocksdb_hash` 브랜치 이동 (`hash_skiplist_improvements`, 끝 2561b92b7).
+- [x] `~/rocksdb/rocksdb_hash_demo` 이동(이 저장소).
+- [x] TPC-E 데이터: `~/tpc-e/flat_out` (Trade.txt 28,664,881행 확인).
+- [x] 경로 하드코딩 제거.
+  - 실험 스크립트는 바이너리를 스크립트 위치 기준으로 찾는다(`OTB_BIN`으로 덮어쓰기 가능).
+  - 빌드 스크립트의 `ROCKSDB_ROOT` 기본값은 `$HOME/rocksdb/rocksdb_hash`다.
+  - `op_trade_bench`의 기본 입력은 실행 시 `$TPCE_DIR/flat_out/Trade.txt`로 정해진다(`TPCE_DIR` 기본값 `$HOME/tpc-e`).
+- [ ] RocksDB 빌드: `build/`(Debug, 테스트)와 `build-rel/`(Release 공유 라이브러리) 모두 없음. 5.4절 참고. 서버는 RAM이 넉넉해 `-j`를 크게 잡아도 된다.
+- [ ] 도구: g++ 14.3, cmake 3.31, docker, python3 있음. JDK 21은 `~/java21`(5.2절).
+- [ ] `taskset` 코어 번호 확인. i9-12900K는 0-15가 P코어(하이퍼스레드 포함), 16-23이 E코어다. 기존 `2-13`은 P코어 범위 안이다.
 - [ ] (선택) Claude 작업 메모 디렉터리 복사. 서버의 프로젝트 경로에 맞는 디렉터리 이름으로 옮겨야 한다.

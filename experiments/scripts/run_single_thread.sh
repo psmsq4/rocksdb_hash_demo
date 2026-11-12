@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One writer, default write_buffer_size, both key formats.
 set -uo pipefail
-bin=$HOME/rocksdb-demo/op_trade_bench/out/op_trade_bench
+bin=${OTB_BIN:-"$(cd "$(dirname "$0")/../.." && pwd)/op_trade_bench/out/op_trade_bench"}
 db=${WORK:-/tmp/otb_work}/st_db
 rounds=${ROUNDS:-5}
 mems=(HEAD UPSTREAM SKIPLIST)

@@ -4,7 +4,7 @@ server:
 
 demo:
   # Clean RocksDB checkout (branch hash_skiplist_improvements).
-  rocksdb-root: ${user.home}/rocksdb
+  rocksdb-root: ${user.home}/rocksdb/rocksdb_hash
   # Directory holding bench binaries built by bench/build.sh.
   bench-dir: ${user.dir}/bench/out
   # Output kept per run, in characters.

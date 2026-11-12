@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Write scaling with N writer threads, preloaded KVs, no flush, WAL off.
 set -uo pipefail
-bin=$HOME/rocksdb-demo/op_trade_bench/out/op_trade_bench
+bin=${OTB_BIN:-"$(cd "$(dirname "$0")/../.." && pwd)/op_trade_bench/out/op_trade_bench"}
 db=${WORK:-/tmp/otb_work}/mt_db
 limit=${LIMIT:-2000000}
 rounds=${ROUNDS:-5}

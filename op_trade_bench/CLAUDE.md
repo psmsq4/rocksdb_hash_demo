@@ -2,7 +2,7 @@
 * 주식 거래 운영환경의 transaction data를 db->put() 하는 시나리오를 구현한다.
 
 ## 재료
-* TPC-E Seed Data: /home/psmsq4/tpc-e/flat_out/*.txt
+* TPC-E Seed Data: ~/tpc-e/flat_out/*.txt
 
 ## 요구사항
 * 생산자: produce_trade_transaction()

@@ -2,7 +2,7 @@
 # Experiment 1: concurrent memtable writes on/off with single-key writes.
 # Experiment 2: WriteBatch sizes with N writers.
 set -uo pipefail
-bin=$HOME/rocksdb-demo/op_trade_bench/out/op_trade_bench
+bin=${OTB_BIN:-"$(cd "$(dirname "$0")/../.." && pwd)/op_trade_bench/out/op_trade_bench"}
 db=${WORK:-/tmp/otb_work}/exp_db
 rounds=${ROUNDS:-3}
 
