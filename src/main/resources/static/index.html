@@ -209,6 +209,18 @@
           </div>
         </div>
 
+        <div class="field" data-kinds="get">
+          <div class="field-label">
+            <label for="set-get-seconds">조회 시간</label>
+            <span class="field-hint">hit, miss, 없는 종목 조회를 각각 이만큼</span>
+          </div>
+          <div class="stepper stepper-sm" data-field="getSeconds">
+            <button type="button" class="step" data-dir="-1" aria-label="조회 시간 줄이기">−</button>
+            <input id="set-get-seconds" class="step-value" inputmode="numeric" autocomplete="off">
+            <button type="button" class="step" data-dir="1" aria-label="조회 시간 늘리기">+</button>
+          </div>
+        </div>
+
         <p class="estimate"></p>
         <p class="modal-error" role="alert" hidden></p>
       </div>

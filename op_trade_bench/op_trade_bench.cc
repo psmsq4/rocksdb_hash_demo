@@ -9,6 +9,12 @@
 //                  [--shuffle] [--key_format=symb_tid|symb_acct_tid]
 //                  [--progress_ms=N] [--metrics_port=N] [--metrics_dump=PATH]
 //                  [--print_samples=N] [--scan_seconds=S] [--scan_length=N]
+//                  [--get_seconds=S]
+//
+// --get_seconds runs point lookups (DB::Get) after the load and any scans,
+// S seconds each of: keys the run wrote (hit), keys inside a written symbol
+// that were never written (miss), and keys of symbols that were never
+// written (no prefix: an empty bucket for hash memtables).
 //
 // --scan_seconds runs range scans after the load, while the KVs are still in
 // the memtable: S seconds of prefix scans (within one symbol) and then S
@@ -730,6 +736,7 @@ struct Args {
   std::string metrics_dump;
   uint64_t print_samples = 0;
   double scan_seconds = 0;     // per scan kind; 0: no scans
+  double get_seconds = 0;      // per lookup kind; 0: no lookups
   uint64_t scan_length = 100;  // entries read per scan
   int hash_height = 4;  // bucket skiplist height of HEAD and UPSTREAM
 };
@@ -775,6 +782,9 @@ void Usage(const char* prog) {
           "seconds\n"
           "                 of total-order scans, a new iterator per scan\n"
           "  --scan_length=N  entries read per scan (default 100)\n"
+          "  --get_seconds=S  after the load, S seconds each of Get for written "
+          "keys,\n"
+          "                 missing keys in written symbols, and unknown symbols\n"
           "  --print_samples=N  print N produced key-values, evenly spaced, as "
           "SAMPLE lines\n"
           "  --consumers=N  writer threads (default 1)\n"
@@ -865,6 +875,12 @@ bool ParseArgs(int argc, char** argv, Args* args) {
       args->scan_seconds = atof(v.c_str());
       if (args->scan_seconds < 0) {
         fprintf(stderr, "--scan_seconds must be >= 0\n");
+        return false;
+      }
+    } else if (value_of("--get_seconds", &v)) {
+      args->get_seconds = atof(v.c_str());
+      if (args->get_seconds < 0) {
+        fprintf(stderr, "--get_seconds must be >= 0\n");
         return false;
       }
     } else if (value_of("--scan_length", &v)) {
@@ -998,6 +1014,12 @@ int main(int argc, char** argv) {
   std::atomic<uint64_t> scans_done{0};
   std::atomic<uint64_t> scan_ns_total{0};
   std::atomic<uint64_t> scan_entries_total{0};
+  // Point lookup progress.
+  std::atomic<int> get_mode{0};  // 0 none, 1 hit, 2 miss, 3 no prefix
+  std::atomic<bool> gets_finished{false};
+  std::atomic<uint64_t> get_mode_start{0};
+  std::atomic<uint64_t> gets_done{0};
+  std::atomic<uint64_t> get_ns_total{0};
 
   // 0 open, 1 preload, 2 load, 5 prefix scans, 6 total-order scans,
   // 3 final flush, 4 done
@@ -1067,6 +1089,19 @@ int main(int argc, char** argv) {
     Metric(&out, "otb_flush_seconds_total", flush_ms_sum / 1e3);
     Metric(&out, "otb_flush_last_ms", events.empty() ? 0 : events.back().ms);
     Metric(&out, "otb_final_flush_ms", final_flush_ms_live.load());
+    if (args.get_seconds > 0) {
+      const int mode = get_mode.load();
+      double progress = gets_finished.load() ? 1.0 : 0.0;
+      if (mode > 0) {
+        const double in_mode = std::min(args.get_seconds,
+                                        (now - get_mode_start.load()) / 1e9);
+        progress = ((mode - 1) * args.get_seconds + in_mode) / (3 * args.get_seconds);
+      }
+      Metric(&out, "otb_get_mode", mode);
+      Metric(&out, "otb_get_progress", progress);
+      Metric(&out, "otb_gets_total", static_cast<double>(gets_done.load()));
+      Metric(&out, "otb_get_seconds_total", get_ns_total.load() / 1e9);
+    }
     if (args.scan_seconds > 0) {
       const int mode = scan_mode.load();
       double progress = scans_finished.load() ? 1.0 : 0.0;
@@ -1124,7 +1159,7 @@ int main(int argc, char** argv) {
 
   KvSampler sampler(args.print_samples, args.limit);
   std::vector<std::string> scan_keys;  // scan start keys, about 64K
-  if (args.scan_seconds > 0) {
+  if (args.scan_seconds > 0 || args.get_seconds > 0) {
     sampler.keep = &scan_keys;
     sampler.keep_stride = std::max<uint64_t>(1, args.limit / 65536);
     scan_keys.reserve(65536 + 1);
@@ -1282,6 +1317,55 @@ int main(int argc, char** argv) {
     scans_finished = true;
   }
 
+  // Point lookups while the KVs are still in the memtable, random keys from
+  // the ones kept above. "miss" appends a byte to a written key, so it lands
+  // next to it in the same symbol; "noprefix" turns trade_SYM| into
+  // trade_SYM~|, a symbol never written that sorts right after SYM, so the
+  // lookups stay spread over the key space.
+  struct GetResult {
+    uint64_t gets = 0;
+    uint64_t found = 0;
+    LatencyHistogram latency;
+  };
+  GetResult get_results[3];
+  if (args.get_seconds > 0 && !scan_keys.empty()) {
+    std::vector<std::string> lookups[3];
+    for (const std::string& k : scan_keys) {
+      lookups[0].push_back(k);
+      lookups[1].push_back(k + "!");
+      const size_t bar = k.find('|');
+      lookups[2].push_back(bar == std::string::npos ? k + "~"
+                                                     : k.substr(0, bar) + "~" + k.substr(bar));
+    }
+    std::mt19937_64 rng(11);
+    ReadOptions ro;
+    std::string value;
+    for (int mode = 1; mode <= 3; ++mode) {
+      GetResult& res = get_results[mode - 1];
+      const std::vector<std::string>& keys = lookups[mode - 1];
+      const uint64_t start = NowNanos();
+      get_mode_start = start;
+      get_mode = mode;
+      phase = 6 + mode;  // 7 hit, 8 miss, 9 no prefix
+      const uint64_t end = start + static_cast<uint64_t>(args.get_seconds * 1e9);
+      while (NowNanos() < end) {
+        const std::string& key = keys[rng() % keys.size()];
+        const uint64_t t0 = NowNanos();
+        Status gs = db->Get(ro, key, &value);
+        const uint64_t dt = NowNanos() - t0;
+        res.latency.Add(dt);
+        ++res.gets;
+        if (gs.ok()) {
+          ++res.found;
+        }
+        gets_done.fetch_add(1, std::memory_order_relaxed);
+        get_ns_total.fetch_add(dt, std::memory_order_relaxed);
+      }
+    }
+    get_mode = 0;
+    gets_finished = true;
+  }
+
   // Times flushing everything still in memtables. With a write buffer large
   // enough to hold all KVs, this is the flush of exactly one memtable.
   double final_flush_ms = -1;
@@ -1341,6 +1425,15 @@ int main(int argc, char** argv) {
     printf("final flush       : %.1f ms (DB::Flush after the load)\n",
            final_flush_ms);
   }
+  static const char* const kGetNames[3] = {"hit", "miss", "noprefix"};
+  for (int mode = 0; mode < 3 && args.get_seconds > 0; ++mode) {
+    const GetResult& r = get_results[mode];
+    printf("get %-13s : %s gets in %.1f s, %s found; latency (us): avg %.2f | p50 %.2f | "
+           "p99 %.2f\n",
+           kGetNames[mode], WithCommas(r.gets).c_str(), args.get_seconds,
+           WithCommas(r.found).c_str(), r.latency.AverageNanos() / 1e3,
+           r.latency.PercentileNanos(0.50) / 1e3, r.latency.PercentileNanos(0.99) / 1e3);
+  }
   for (int mode = 0; mode < 2 && args.scan_seconds > 0; ++mode) {
     const ScanResult& r = scan_results[mode];
     printf("%s : %s scans in %.1f s, %llu entries each at most; latency (us): "
@@ -1379,6 +1472,16 @@ int main(int argc, char** argv) {
            r.latency.PercentileNanos(0.50) / 1e3, name, r.latency.PercentileNanos(0.99) / 1e3,
            name, static_cast<unsigned long long>(r.entries), name,
            static_cast<unsigned long long>(r.errors));
+  }
+  for (int mode = 0; mode < 3 && args.get_seconds > 0; ++mode) {
+    const GetResult& r = get_results[mode];
+    const char* name = kGetNames[mode];
+    printf(" get_%s=%llu get_%s_per_s=%.1f get_%s_avg_us=%.3f get_%s_p50_us=%.3f "
+           "get_%s_p99_us=%.3f get_%s_found=%llu",
+           name, static_cast<unsigned long long>(r.gets), name, r.gets / args.get_seconds,
+           name, r.latency.AverageNanos() / 1e3, name, r.latency.PercentileNanos(0.50) / 1e3,
+           name, r.latency.PercentileNanos(0.99) / 1e3, name,
+           static_cast<unsigned long long>(r.found));
   }
   printf("\n");
   fflush(stdout);

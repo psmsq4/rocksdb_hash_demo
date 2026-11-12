@@ -45,6 +45,8 @@ public final class TargetRun {
     private double prevCpu;
     private double prevScans = -1;
     private double prevScanSec;
+    private double prevGets = -1;
+    private double prevGetSec;
 
     TargetRun(String memtable, String cpuSet, int logLines) {
         this.memtable = memtable;
@@ -214,6 +216,19 @@ public final class TargetRun {
             s.put("scanAvgUs", scanning && ds > 0 ? round((scanSec - prevScanSec) / ds * 1e6, 2) : null);
             prevScans = scans;
             prevScanSec = scanSec;
+        }
+        // Point lookups: rate and average latency since the previous scrape.
+        Double gets = g.get("otb_gets_total");
+        Double getSec = g.get("otb_get_seconds_total");
+        if (gets != null && getSec != null) {
+            s.put("getMode", g.get("otb_get_mode"));
+            s.put("getProgress", g.get("otb_get_progress"));
+            double dg = prevGets < 0 ? 0 : gets - prevGets;
+            boolean looking = phase >= 7 && phase <= 9;
+            s.put("getOps", looking && scanDt > 0.05 && prevGets >= 0 ? round(dg / scanDt, 0) : null);
+            s.put("getAvgUs", looking && dg > 0 ? round((getSec - prevGetSec) / dg * 1e6, 3) : null);
+            prevGets = gets;
+            prevGetSec = getSec;
         }
         Map<String, Double> write = newHistograms.get("rocksdb.db.write.micros");
         s.put("writeP99", write == null ? null : write.get("p99"));

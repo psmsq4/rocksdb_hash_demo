@@ -51,15 +51,15 @@ function fmtMicros(v) {
 }
 const fmtMs = (v) => (isNum(v) ? nf1.format(v) + " ms" : "–");
 const fmtSec = (v) => (isNum(v) ? nf1.format(v) + "초" : "–");
-function fmtDelta(v, base) {
+function fmtDelta(v, base, name = "UPSTREAM") {
   if (!isNum(v) || !isNum(base) || base === 0) return "";
   const ratio = v / base;
   // Orders of magnitude read better as a ratio than as a percentage.
-  if (ratio >= 3) return `UPSTREAM의 ${nf0.format(ratio)}배`;
-  if (ratio > 0 && ratio <= 1 / 3) return `UPSTREAM의 1/${nf0.format(1 / ratio)}`;
+  if (ratio >= 3) return `${name}의 ${nf0.format(ratio)}배`;
+  if (ratio > 0 && ratio <= 1 / 3) return `${name}의 1/${nf1.format(1 / ratio)}`;
   const d = (ratio - 1) * 100;
-  if (Math.abs(d) < 0.05) return "UPSTREAM과 같음";
-  return `UPSTREAM 대비 ${d > 0 ? "+" : "−"}${nf1.format(Math.abs(d))}%`;
+  if (Math.abs(d) < 0.05) return `${name}와 같음`;
+  return `${name} 대비 ${d > 0 ? "+" : "−"}${nf1.format(Math.abs(d))}%`;
 }
 
 // Microseconds shown in the unit that fits.
@@ -67,7 +67,7 @@ function fmtLatency(us) {
   if (!isNum(us)) return "–";
   if (us >= 1e6) return nf2.format(us / 1e6) + " s";
   if (us >= 1e3) return nf1.format(us / 1e3) + " ms";
-  return nf1.format(us) + " µs";
+  return (us < 10 ? nf2 : nf1).format(us) + " µs";
 }
 
 function el(tag, attrs = {}, ...children) {
@@ -155,6 +155,14 @@ const STAT_ROWS = [
   { kind: "ticker", key: "rocksdb.stall.micros", label: "쓰기 정지 시간", fmt: fmtMicros,
     desc: "flush나 컴팩션이 밀려 쓰기가 멈춘 누적 시간. 0이면 flush가 쓰기를 막지 않았습니다." },
   { group: "읽기" },
+  { kind: "ticker", key: "rocksdb.number.keys.read", label: "Get 호출", fmt: fmtCount, optional: true,
+    desc: "DB::Get으로 읽으려 한 key 수." },
+  { kind: "ticker", key: "rocksdb.memtable.hit", label: "memtable에서 찾음", fmt: fmtCount, optional: true,
+    desc: "Get이 memtable에서 값을 찾은 수." },
+  { kind: "ticker", key: "rocksdb.memtable.miss", label: "memtable에서 못 찾음", fmt: fmtCount, optional: true,
+    desc: "memtable에 없어 SST까지 내려간 Get 수. 여기서는 SST가 없어 바로 끝납니다." },
+  { kind: "hist", key: "rocksdb.db.get.micros", label: "Get 1회 소요 시간", fmt: fmtMicros, optional: true,
+    desc: "DB::Get 한 번. 세 종류가 섞인 평균과 p99." },
   { kind: "ticker", key: "rocksdb.number.db.seek", label: "Seek 호출", fmt: fmtCount, optional: true,
     desc: "iterator의 Seek 수. scan마다 한 번입니다." },
   { kind: "ticker", key: "rocksdb.number.db.next", label: "Next 호출", fmt: fmtCount, optional: true,
@@ -269,7 +277,45 @@ function scanProgress(t) {
   const scan = isNum(s.scanProgress) ? s.scanProgress : 0;
   return 0.3 * load + 0.7 * scan;
 }
-const PHASE_TEXT = { 1: "KV 준비 중", 2: "적재 중", 5: "prefix scan 중", 6: "total-order scan 중", 3: "flush 중" };
+const PHASE_TEXT = {
+  1: "KV 준비 중", 2: "적재 중", 5: "prefix scan 중", 6: "total-order scan 중", 3: "flush 중",
+  7: "hit 조회 중", 8: "miss 조회 중", 9: "없는 종목 조회 중",
+};
+
+// Point lookups: from RESULT at the end, live from the scrapes.
+const GET_KINDS = { hit: 1, miss: 2, noprefix: 3 };
+function getLatency(t, kind) {
+  const r = t && t.result && num(t.result[`get_${kind}_p50_us`]);
+  if (isNum(r)) return r;
+  const xs = t ? t.samples.filter((x) => x.getMode === GET_KINDS[kind] && isNum(x.getAvgUs)) : [];
+  return xs.length ? xs[xs.length - 1].getAvgUs : null;
+}
+function getRate(t, kind) {
+  const r = t && t.result && num(t.result[`get_${kind}_per_s`]);
+  if (isNum(r)) return r;
+  const xs = t ? t.samples.filter((x) => x.getMode === GET_KINDS[kind] && isNum(x.getOps)) : [];
+  return xs.length ? xs[xs.length - 1].getOps : null;
+}
+const fmtGets = (v) => (isNum(v) ? fmtCompact(v) + " 회/s" : "–");
+
+// Load is close to half of a point lookup run.
+function getProgress(t) {
+  if (!t) return 0;
+  if (t.state === "DONE") return 1;
+  const s = lastSample(t);
+  if (!s) return 0;
+  const load = s.limit ? Math.min(1, s.consumed / s.limit) : 0;
+  const gets = isNum(s.getProgress) ? s.getProgress : 0;
+  return 0.45 * load + 0.55 * gets;
+}
+
+const GET_CHARTS = [
+  { id: "getOps", title: "Get 처리량", unit: "회/s", hint: "앞쪽부터 hit, miss, 없는 종목", fmt: fmtGets },
+  { id: "getAvgUs", title: "Get 평균 지연", unit: "µs", hint: "1초 구간 평균", fmt: fmtLatency },
+  { id: "ops", title: "적재 처리량", unit: "ops/s", hint: "조회 전 적재 구간", fmt: fmtOps },
+  { id: "cpu", title: "CPU 사용률", unit: "%", hint: "프로세스 전체, 100% = 코어 1개",
+    fmt: (v) => (isNum(v) ? nf0.format(v) + "%" : "–") },
+];
 
 const SCAN_CHARTS = [
   { id: "scanOps", title: "scan 처리량", unit: "회/s", hint: "앞쪽은 prefix, 뒤쪽은 total-order", fmt: fmtScans },
@@ -323,6 +369,22 @@ const VIEWS = {
       { title: "total-order scan 처리량", hint: "초당 scan 수", get: (t) => scanRate(t, "total"), fmt: fmtScans },
     ],
     charts: SCAN_CHARTS,
+  },
+  get: {
+    progress: getProgress,
+    tile: {
+      value: (t) => getLatency(t, "hit"), show: (v) => fmtLatency(v),
+      unit: "hit p50", empty: "Get 지연",
+      sub: (t) => `없는 종목 p50 ${fmtLatency(getLatency(t, "noprefix"))}`,
+    },
+    compare: [
+      { title: "hit 지연 p50", hint: "있는 key", get: (t) => getLatency(t, "hit"), fmt: fmtLatency },
+      { title: "miss 지연 p50", hint: "있는 종목 안의 없는 key", get: (t) => getLatency(t, "miss"), fmt: fmtLatency },
+      { title: "없는 종목 지연 p50", hint: "한 번도 쓰지 않은 종목", get: (t) => getLatency(t, "noprefix"), fmt: fmtLatency,
+        vs: "SKIPLIST" },
+      { title: "hit 처리량", hint: "초당 Get 수", get: (t) => getRate(t, "hit"), fmt: fmtGets },
+    ],
+    charts: GET_CHARTS,
   },
 };
 
@@ -455,11 +517,12 @@ function specChips(s) {
     ["bucket 높이", String(s.hashHeight)],
     ["동시 쓰기", s.concurrent ? "켬" : "끔"],
     ...(s.scanSeconds > 0 ? [["scan", `${s.scanSeconds}초씩, ${fmtCount(s.scanLength)}개`]] : []),
+    ...(s.getSeconds > 0 ? [["Get", `${s.getSeconds}초씩`]] : []),
   ];
 }
 
 function sameSettings(a, b) {
-  return !!a && !!b && ["kv", "memtableMb", "keyFormat", "preload", "wal", "consumers", "hashHeight", "concurrent", "scanSeconds", "scanLength"]
+  return !!a && !!b && ["kv", "memtableMb", "keyFormat", "preload", "wal", "consumers", "hashHeight", "concurrent", "scanSeconds", "scanLength", "getSeconds"]
     .every((k) => a[k] === b[k]);
 }
 
@@ -468,7 +531,7 @@ function estimateSeconds(s, rates) {
   let rate = rates[(s.preload ? "preload" : "queue") + (s.wal ? "Wal" : "")];
   if (s.keyFormat === "symb_acct_tid") rate *= rates.accountKeyFactor;
   if (s.preload && s.consumers > 1) rate *= rates.multiWriterFactor;
-  return s.kv / rate + rates.overheadSeconds + 2 * (s.scanSeconds || 0);
+  return s.kv / rate + rates.overheadSeconds + 2 * (s.scanSeconds || 0) + 3 * (s.getSeconds || 0);
 }
 
 // Rough bytes one preloaded KV takes in memory (two std::strings and heap).
@@ -523,6 +586,12 @@ const settingsDialog = {
         return Math.min(l.scanLengthMax, Math.max(l.scanLengthStep, r));
       },
     });
+    this.getSeconds = this.stepper("getSeconds", {
+      parse: (t) => Number(String(t).replace(/[^\d]/g, "")),
+      show: (v) => `${v}초`,
+      next: (v, dir) => v + dir,
+      fix: (v) => Math.min(this.info.limits.getSecondsMax, Math.max(1, Math.round(v) || 1)),
+    });
     this.consumers = this.stepper("consumers", {
       parse: (t) => Number(String(t).replace(/[^\d]/g, "")),
       show: (v) => String(v),
@@ -550,7 +619,10 @@ const settingsDialog = {
   // Steppers the current card shows.
   steppers() {
     const all = [this.kv, this.mem, this.consumers];
-    return this.card && this.card.bench.kind === "scan" ? [...all, this.scanSeconds, this.scanLength] : all;
+    const kind = this.card && this.card.bench.kind;
+    if (kind === "scan") return [...all, this.scanSeconds, this.scanLength];
+    if (kind === "get") return [...all, this.getSeconds];
+    return all;
   },
 
   // A rounded −/value/+ control. Holding a button repeats, faster over time;
@@ -797,12 +869,18 @@ function workloadTraits(s, p) {
   if (s.scanSeconds > 0) {
     rows.push(["scan", `적재가 끝나면 prefix scan(한 종목 안, prefix_same_as_start)을 ${s.scanSeconds}초, total-order scan(total_order_seek, 종목을 넘어 key 순서대로)을 ${s.scanSeconds}초 합니다. scan마다 iterator를 새로 열고 적재한 key 중 하나로 seek한 뒤 최대 ${fmtCount(s.scanLength)}개를 읽습니다.`]);
     rows.push(["iterator", "UPSTREAM은 total-order iterator를 열 때마다 memtable 전체를 정렬된 skiplist로 복사합니다. HEAD는 정렬된 prefix 목록으로 복사 없이 순서대로 읽습니다."]);
+  }
+  if (s.getSeconds > 0) {
+    rows.push(["Get", `적재가 끝나면 DB::Get을 ${s.getSeconds}초씩 세 번 합니다. 적재한 key 약 6.5만 개 중에서 무작위로 고릅니다. hit는 그 key, miss는 그 key 바로 뒤의 없는 key(같은 종목), 없는 종목은 trade_종목~| 처럼 한 번도 쓰지 않은 종목입니다.`]);
+    rows.push(["탐색", "Get은 순차 삽입과 달리 지름길 없이 매번 bucket 맨 위 레벨부터 찾습니다. hash 계열은 없는 종목이면 빈 bucket이라 탐색 없이 끝나고, SKIPLIST는 전체 리스트를 찾아 내려갑니다."]);
+  }
+  if (s.scanSeconds > 0 || s.getSeconds > 0) {
     if (p && p.available) {
       const entry = p.avgKeyBytes[s.keyFormat] + p.avgValueBytes + MEMTABLE_OVERHEAD_BYTES;
       const fits = s.kv * entry <= s.memtableMb * 1024 * 1024 * 0.95;
       rows.push(["memtable", fits
-        ? `KV 약 ${fmtBytes(s.kv * entry)}가 memtable(${s.memtableMb}MB) 하나에 들어가 scan이 memtable만 읽습니다.`
-        : `KV 약 ${fmtBytes(s.kv * entry)}가 memtable(${s.memtableMb}MB)보다 커서 일부가 SST로 flush됩니다. scan은 SST도 함께 읽습니다.`]);
+        ? `KV 약 ${fmtBytes(s.kv * entry)}가 memtable(${s.memtableMb}MB) 하나에 들어가 읽기가 memtable만 봅니다.`
+        : `KV 약 ${fmtBytes(s.kv * entry)}가 memtable(${s.memtableMb}MB)보다 커서 일부가 SST로 flush됩니다. 읽기는 SST도 함께 봅니다.`]);
     }
   }
   if (s.consumers > 1) {
@@ -1096,8 +1174,10 @@ class Card {
         row.fill.style.width = isNum(v) && max > 0 ? `${(v / max) * 100}%` : "0";
         row.value.textContent = c.fmt(v);
         row.row.title = m === "UPSTREAM" ? "" : fmtDelta(v, vals.UPSTREAM);
+        // A panel can name the memtable HEAD is best compared with.
       }
-      const d = fmtDelta(vals.HEAD, vals.UPSTREAM);
+      const vs = c.vs || "UPSTREAM";
+      const d = fmtDelta(vals.HEAD, vals[vs], vs);
       c.foot.textContent = d ? `HEAD: ${d}` : " ";
     }
 

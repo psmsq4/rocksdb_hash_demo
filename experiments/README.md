@@ -47,6 +47,7 @@ UPSTREAM은 `op_trade_bench`에 내장(`upstream_hash_skiplist_rep.cc`)되어 �
 | run_bigflush.sh | bigflush.txt | 512MB/1GB memtable flush | HEAD -21% / -50% |
 | run_height.sh | server/height.txt | bucket 높이 4 vs 12 (2048MB/64MB, 계좌 key, 동시 실행) | 2048MB에서 높이 4면 hash가 SKIPLIST보다 느림, 12면 HEAD가 12% 빠름 |
 | run_fastpath.sh | server/fastpath.txt | 시간순 vs 계좌 key에서 HEAD와 UPSTREAM (2048MB, 높이 12, 단독, perf) | 시간순은 fast-path로 같음, 계좌는 HEAD 14% 빠름(L1 미스 −36%) |
+| run_get.sh | server/get.txt | 점 조회 hit / miss / 없는 종목 (20만~1천만 건, 높이 12와 4, 단독) | 큰 데이터에서 HEAD가 UPSTREAM보다 9~16% 빠름, 없는 종목은 hash 0.29µs 대 SKIPLIST 1.3~2.0µs |
 
 각 `summarize_*.py`에 결과 파일을 넘기면 표가 나옵니다.
 
