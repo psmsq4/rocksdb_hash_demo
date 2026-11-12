@@ -1,7 +1,20 @@
 package dev.psmsq4.rocksdbdemo;
 
+import java.util.Map;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+/**
+ * @param benchBinary op_trade_bench built by op_trade_bench/build.sh
+ * @param workDir     scratch directory for databases and metric dumps
+ * @param cpuSets     taskset CPU list per memtable (lower-case key), so the
+ *                    three concurrent runs do not share cores
+ * @param logLines    output lines kept per run
+ */
 @ConfigurationProperties(prefix = "demo")
-public record DemoProperties(String rocksdbRoot, String benchDir, int maxOutput) {
+public record DemoProperties(String benchBinary, String workDir, Map<String, String> cpuSets,
+                             int logLines) {
+
+    public String cpuSetFor(String memtable) {
+        return cpuSets == null ? null : cpuSets.get(memtable.toLowerCase());
+    }
 }

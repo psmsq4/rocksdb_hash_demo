@@ -6,8 +6,10 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-import dev.psmsq4.rocksdbdemo.catalog.TestCase;
-import dev.psmsq4.rocksdbdemo.catalog.TestCatalog;
+import dev.psmsq4.rocksdbdemo.bench.Benchmark;
+import dev.psmsq4.rocksdbdemo.bench.BenchmarkCatalog;
+import dev.psmsq4.rocksdbdemo.bench.PromText;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -19,38 +21,45 @@ import org.springframework.test.web.servlet.MockMvc;
 class RocksdbDemoApplicationTests {
 
     @Autowired
-    TestCatalog catalog;
+    BenchmarkCatalog catalog;
 
     @Autowired
     MockMvc mvc;
 
     @Test
-    void catalogEntriesAreConsistent() {
-        assertThat(catalog.all()).isNotEmpty();
-        for (TestCase t : catalog.all()) {
-            assertThat(t.status()).isIn("runnable", "recorded", "planned");
-            assertThat(t.runnable()).as(t.id()).isEqualTo("runnable".equals(t.status()));
-            if (t.runnable()) {
-                assertThat(t.timeoutSec()).as(t.id()).isPositive();
-            }
-            for (TestCase.ResultTable table : t.results()) {
-                for (var row : table.rows()) {
-                    assertThat(row).as(t.id() + " / " + table.caption()).hasSameSizeAs(table.headers());
-                }
-            }
+    void catalogStartsWithTheFlushCard() {
+        List<Benchmark> all = catalog.all();
+        assertThat(all).isNotEmpty();
+        assertThat(all.get(0).id()).isEqualTo("flush");
+        for (Benchmark b : all) {
+            assertThat(b.targets()).isNotEmpty();
+            assertThat(b.timeoutSeconds()).isLessThanOrEqualTo(30);
+            assertThat(b.args()).noneMatch(a -> a.startsWith("--memtable") || a.startsWith("--db"));
         }
     }
 
     @Test
-    void listsTests() throws Exception {
-        mvc.perform(get("/api/tests"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].id").value("unit-prefix-test"));
+    void parsesPrometheusText() {
+        List<PromText.Line> lines = PromText.parse("""
+                # HELP x
+                otb_phase 2
+                otb_flush_event_ms{seq="3",end_s="1.250",reason="Write Buffer Full"} 153.5
+                rocksdb_ticker{name="rocksdb.bytes.written"} 912622955
+                """);
+        assertThat(lines).hasSize(3);
+        assertThat(lines.get(0).value()).isEqualTo(2);
+        assertThat(lines.get(1).label("reason")).isEqualTo("Write Buffer Full");
+        assertThat(lines.get(1).label("end_s")).isEqualTo("1.250");
+        assertThat(lines.get(2).value()).isEqualTo(912622955d);
     }
 
     @Test
-    void rejectsUnknownAndNonRunnableTests() throws Exception {
-        mvc.perform(post("/api/tests/no-such-test/run")).andExpect(status().isNotFound());
-        mvc.perform(post("/api/tests/demo-noop/run")).andExpect(status().isBadRequest());
+    void listsBenchmarksAndRejectsUnknownOnes() throws Exception {
+        mvc.perform(get("/api/benchmarks"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].id").value("flush"))
+                .andExpect(jsonPath("$[0].targets.length()").value(3));
+        mvc.perform(get("/api/benchmarks/flush/run")).andExpect(status().isNoContent());
+        mvc.perform(post("/api/benchmarks/nope/run")).andExpect(status().isNotFound());
     }
 }

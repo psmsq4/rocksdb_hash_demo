@@ -162,21 +162,25 @@ op_trade_bench/out/op_trade_bench --memtable=HEAD|UPSTREAM|SKIPLIST [옵션]
 | `--shuffle` | preload한 KV 순서를 섞음(seed 42) |
 | `--flush_at_end` | 적재 후 `DB::Flush()` 시간을 측정 (`final_flush_ms`) |
 | `--queue=N`, `--progress_ms=N`, `--input=`, `--db=` | 큐 크기, 진행 출력 주기, 입력, DB 경로 |
+| `--metrics_port=N` | `127.0.0.1:N/metrics`에 Prometheus 지표 노출(0이면 빈 포트, `METRICS_PORT=<n>` 출력). flush 이벤트, memtable과 DB 속성, CPU와 RSS, 0이 아닌 RocksDB statistics |
+| `--metrics_dump=PATH` | 적재와 최종 flush 후 같은 지표를 파일로 남김(종료 후에도 최종값을 읽기 위함) |
 
 - prefix 추출기: 첫 `|`까지(구분자 포함). key 끝은 길이로 정해지므로 t_id 뒤에 구분자가 필요 없다.
 - UPSTREAM은 `e591f5f1a`의 `hash_skiplist_rep.cc`를 이름만 바꿔 내장(`upstream_hash_skiplist_rep.cc`, `gen_upstream.sh`로 재생성). 그래서 한 바이너리로 세 memtable을 비교한다.
 - 다른 커밋의 HEAD를 쓰려면 `LD_LIBRARY_PATH=$WORK/libs/<이름>`(RUNPATH보다 우선).
 - 마지막 줄 `RESULT key=value ...`를 스크립트가 파싱한다. "queue+put latency"는 큐가 늘 가득 차 있어 의미가 없다(큐 길이 ÷ 처리량).
 
-### 5.2 웹 앱 (Spring Boot 3.5.9, Java 21, Gradle 8.10 wrapper)
+### 5.2 웹 대시보드 (Spring Boot 3.5.9, Java 21, Gradle 8.10 wrapper)
 ```bash
-./gradlew build && ~/java21/bin/java -jar build/libs/rocksdb-demo-0.1.0.jar   # http://127.0.0.1:8080
-bench/build.sh                                                     # 메모리/높이 벤치(mem_bench)
+op_trade_bench/build.sh                                            # 측정기 먼저
+./gradlew build && ~/java21/bin/java -jar build/libs/rocksdb-demo-0.1.0.jar   # http://127.0.0.1:8080/#flush
 ```
-- 서버에는 JDK 21이 `~/java21`에만 있다. Gradle toolchain은 `~/.gradle/gradle.properties`의 `org.gradle.java.installations.paths`로 찾고, jar는 `~/java21/bin/java`로 실행한다. 다른 경로면 `application.yml`의 `demo.rocksdb-root`도 확인할 것.
-- `src/main/resources/catalog.json`이 테스트 목록이다. `runnable` 항목은 정의된 명령만 실행하며 한 번에 하나씩 돈다. `${root}`는 `~/rocksdb/rocksdb_hash`, `${bench}`는 `bench/out`이다.
-- localhost에만 바인딩된다. 단위 테스트 3개, mem_bench 2개가 실행 가능 항목이다.
-- **카탈로그는 2026-11-10 상태다.** 3.3절 이후 결과(메모, flush, 멀티 스레드, key 형식)는 아직 반영되지 않았다.
+- 서버에는 JDK 21이 `~/java21`에만 있다. Gradle toolchain은 `~/.gradle/gradle.properties`의 `org.gradle.java.installations.paths`로 찾고, jar는 `~/java21/bin/java`로 실행한다.
+- 저장소 루트에서 실행할 것. 측정기 경로(`demo.bench-binary`)가 실행 위치 기준이다.
+- 카드 하나가 벤치마크 하나다(`bench/BenchmarkCatalog.java`). 시작 버튼을 누르면 HEAD, UPSTREAM, SKIPLIST를 동시에 띄우고 `demo.cpu-sets`(기본 2-5, 6-9, 10-13)로 코어를 나눈다. 백엔드(`bench/RunService.java`)가 각 프로세스의 `/metrics`를 1초마다 긁어 시계열로 쌓고, 페이지가 1초마다 `GET /api/benchmarks/{id}/run`으로 받아 그린다(uPlot, `static/vendor`). 측정은 한 번에 하나, `timeoutSeconds`를 넘으면 중단한다.
+- 첫 카드는 flush: 1,000만 건, 64MB memtable, WAL 끔, 마지막에 `DB::Flush`. 세 개를 동시에 돌려 가장 느린 SKIPLIST가 약 22초.
+- localhost에만 바인딩된다. 다른 PC에서 보려면 `ssh -L 8080:127.0.0.1:8080 <서버>`.
+- 글꼴은 Meslo LG S DZ for Powerline(`static/fonts`, powerline/fonts)이다.
 
 ### 5.3 실험 스크립트
 `experiments/README.md` 참고. 라이브러리 빌드는 `experiments/scripts/build_libs.sh`.
@@ -210,9 +214,9 @@ git clang-format   # clang-format 23.1.5가 ~/.local/bin에 있음
 1. **회귀 테스트 묶음 재실행**: 9d92aecc1, 2561b92b7 이후 db_test, db_iterator_test, db_bloom_filter_test, db_tailing_iter_test, perf_context_test, options_test를 아직 돌리지 않았다(3커밋 시점에는 모두 통과).
 2. **서버에서 3절 전체 재측정** 후 이 문서의 표 갱신.
 3. **읽기 측정**: point lookup(Get)은 한 번도 재지 않았다. 시나리오 2의 "prefix 그룹 분석 쿼리"와 "랜덤 점/범위 조회"를 op_trade_bench에 추가해야 한다(현재는 쓰기와 flush만).
-4. **실시간 지표(Prometheus/Grafana)**: 설계만 했다. op_trade_bench에 `--metrics_port`로 `/metrics` 노출(RocksDB `EventListener`의 `OnFlushBegin/OnFlushCompleted`로 flush 시간, Put 카운터와 지연, memtable 크기, write stall, `/proc/self` 기반 CPU와 RSS), `monitoring/`에 docker compose(Prometheus 1초 수집, Grafana 대시보드). flush를 이벤트 단위로 보여주려면 Spring이 stdout을 받아 SSE로 미는 방식이 더 맞다.
+4. **실시간 지표**: op_trade_bench `--metrics_port`와 웹 대시보드(5.2절)로 구현했다. 남은 것은 Prometheus/Grafana 연동(선택)이다. 원래 설계: op_trade_bench에 `--metrics_port`로 `/metrics` 노출(RocksDB `EventListener`의 `OnFlushBegin/OnFlushCompleted`로 flush 시간, Put 카운터와 지연, memtable 크기, write stall, `/proc/self` 기반 CPU와 RSS), `monitoring/`에 docker compose(Prometheus 1초 수집, Grafana 대시보드). flush를 이벤트 단위로 보여주려면 Spring이 stdout을 받아 SSE로 미는 방식이 더 맞다.
 5. **시연 시나리오 2의 나머지**: session/login/event 생산자(무작위 ID → 동시 쓰기 켬 시연), 7GB에서는 memtable 512MB 이하.
-6. **웹 카탈로그 갱신**: 3.3절 이후 결과를 기록 항목으로, op_trade_bench 실행 항목 추가.
+6. **웹 대시보드 카드 추가**: flush 다음으로 멀티 스레드 쓰기, key 형식, 읽기 측정 카드.
 7. (선택) HashSkipListRepFactory 주석에 "prefix 안에서 key가 증가하는 워크로드는 `allow_concurrent_memtable_write=false` 권장" 추가.
 8. (선택) 도메인 밖 key insert 처리(예: key 전체를 prefix로). upstream에서 물려받은 문제.
 9. (선택) upstream PR. `KeyComparator::user_comparator()` public API 추가가 리뷰 쟁점. 대안은 prefix를 internal key 형식으로 저장해 기존 comparator를 재사용(비교 시 복사 비용).
