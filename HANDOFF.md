@@ -1,0 +1,227 @@
+# HashSkipList 개선 작업 인수인계
+
+작성: 2026-11-12. 이 문서와 두 저장소(`~/rocksdb`, `~/rocksdb-demo`)만으로 작업을 이어갈 수 있도록
+설계, 측정 결과, 도구 사용법, 남은 일을 정리했습니다. 측정 수치는 모두 아래 "측정 환경"의 WSL
+머신에서 나온 값이므로, 서버로 옮기면 같은 스크립트로 다시 측정해야 합니다.
+
+## 0. 요약
+
+RocksDB `HashSkipListRep`(prefix hash memtable)의 두 결격 사유를 없앴다.
+
+1. **total-order iteration이 매우 느림**: iterator를 만들 때마다(flush 포함) memtable 전체를 새
+   skiplist로 복사했다. → 정렬된 `prefix_list_`와 `PrefixOrderedIterator`로 복사 없이 순회.
+2. **동시 쓰기 불가**: `allow_concurrent_memtable_write`(RocksDB 기본값)를 켜면 DB가 열리지 않았다.
+   → bucket을 InlineSkipList로 바꾸고 CAS로 bucket을 설치해 `InsertConcurrently` 지원.
+
+| 항목 | HEAD 대 upstream HashSkipList |
+|---|---|
+| total-order seek | 0.33~1.9초 → 7.5~12.9µs (seek+10) |
+| iterator 메모리 | entry당 약 20B → 0 |
+| flush | 64MB 약 23%, 512MB 약 21%, 1GB 약 50% 빠름 (upstream은 memtable이 클수록 느려짐) |
+| 단일 스레드 쓰기 | 동등 (편차 범위) |
+| 멀티 스레드 쓰기 | key가 prefix 안에서 흩어질 때 8스레드 1.9배. 시간순 key에서는 동시 쓰기를 끄는 게 빠르고, 끄면 동등 |
+| 메모리 | prefix당 key 16개 이상이면 +1~11%, prefix당 key 1개면 +50% |
+
+## 1. 위치
+
+| 무엇 | 경로 | 상태 |
+|---|---|---|
+| 작업 브랜치 | `~/rocksdb`, 브랜치 `hash_skiplist_improvements` | 커밋 4개 + base. **push 안 됨** (origin은 facebook/rocksdb) |
+| base | `e591f5f1a` (2026-11-08 기준 facebook/rocksdb main) | |
+| 시연 앱, 벤치, 실험 | `~/rocksdb-demo` (이 저장소) | |
+| TPC-E 데이터 | `~/tpc-e/flat_out/*.txt` (5.7GB, Trade.txt 3.2GB, 28,664,881행) | EGen 5000 customers, scale factor 500, initial trade days 300 (`~/tpc-e/bin/EGenLoaderFrom1To5000.log`) |
+| 과거 과제 보고서 | `~/rocksdb_report/*.pdf` (14팀 1~4차 발표) | 일부 주장은 아래 4절에서 정정 |
+| 연구용 저장소 | `~/oss_bigdata/rocksdb`, 브랜치 `prefix_layer` | 로그, 계측 코드로 오염됨. **쓰지 말 것** |
+| Claude 작업 메모 | `~/.claude/projects/-home-psmsq4-oss-bigdata-rocksdb/memory/` | 서버의 Claude Code에서도 쓰려면 복사 |
+
+## 2. 커밋 (`~/rocksdb`, 오래된 순)
+
+| 커밋 | 제목 | 핵심 |
+|---|---|---|
+| efcdab406 | Use InlineSkipList for HashSkipListRep buckets | bucket을 `SkipList`에서 `InlineSkipList`로 교체. key가 node 안에 있어야 하므로 `Allocate()`를 override해 `key_allocator_`(삽입은 하지 않는 InlineSkipList)로 node를 할당하고 나중에 bucket에 연결 (zero-copy) |
+| fd1587399 | Support concurrent writes in HashSkipListRep | `InsertConcurrently()` 구현, bucket 설치를 `compare_exchange_strong`으로, factory가 동시 쓰기 지원을 보고 |
+| aaa3f6e4e | Iterate HashSkipListRep in total order without copying | `prefix_list_`(user comparator로 정렬된 prefix InlineSkipList) + `PrefixOrderedIterator`. 그룹 경계는 `InlineSkipList::Iterator::SeekToFirstNotMatching/SeekToLastMatching`(predicate 탐색, 새로 추가)으로 찾음. `MemTableRep::KeyComparator::user_comparator()` 추가(public API 변경) |
+| 9d92aecc1 | Give HashSkipListRep's prefix list its own minimum height | `prefix_list_` 높이를 `max(skiplist_height, 12)`로. 기본 높이 4는 prefix가 많으면 선형 탐색이 됨 |
+| 2561b92b7 | Skip the prefix list lookup on HashSkipListRep inserts | bucket마다 마지막 등록 prefix의 `prefix_list_` 항목을 기억(`HashBucket::known_prefix`, release/acquire). insert마다 하던 `prefix_list_` 탐색 제거. `TotalOrderIterator` 테스트에 bucket 1000개 조합 추가 |
+
+release note는 `unreleased_history/`에 4개(앞 3개 커밋분).
+
+### 설계에서 꼭 알아야 할 불변식
+- **prefix를 bucket보다 먼저 등록한다.** iterator가 bucket에서 key를 찾으면 그 prefix도 `prefix_list_`에 있어야 한다. 메모(`known_prefix`)는 prefix 등록 후 release로 저장, acquire로 읽는다.
+- **prefix 순서가 key 순서를 따라야 한다**(options.h의 "권장" 조건). `prefix_list_` 순서가 곧 출력 순서이기 때문. fixed, capped, noop, "구분자 포함" 추출기는 만족한다. "구분자 앞까지(구분자 제외)"는 깨진다(예: `a!.b` < `a.z`인데 prefix는 `a` < `a!`).
+- prefix가 그룹의 시작일 필요는 없다(predicate 탐색으로 경계를 찾음). ReverseBytewiseComparator 테스트 통과.
+- user-defined timestamp comparator는 지원하지 않는다(debug assert).
+- 도메인 밖 key를 insert하면 upstream과 마찬가지로 처리하지 않는다. `FixedPrefixTransform::Transform`은 release 빌드에서 key 뒤 footer까지 읽는다. capped와 noop은 모든 key가 도메인 안이라 안전.
+
+## 3. 측정 결과
+
+### 측정 환경
+Intel Core Ultra 7 155H(논리 22코어, L3 24MB), RAM 7.6GB, WSL2(5.15) Ubuntu 22.04, g++ 11.4,
+cmake 3.22, Release 빌드(-O3 -march=native -fno-rtti). VSCode 등이 메모리를 4~5GB 써서
+사용 가능 메모리가 2~4GB였다.
+
+**편차 주의:** 같은 조건에서도 실행마다 ±10%, 세션 간 기준선이 최대 40% 움직였다. 비교는 같은
+세션에서 구성을 번갈아(라운드마다 순서를 바꿔) 5~7회 돌린 중앙값만 믿을 것. 1회 측정으로 잘못된
+결론을 두 번 냈다(아래 4절).
+
+### 3.1 memtable 메모리 (entry당 바이트, 1M key, flush 없음, bucket 1M개)
+
+| prefix당 key | value | upstream | step1 | HEAD(3커밋) | SkipList |
+|---|---|---|---|---|---|
+| 1 | 16B | 151.3 | 194.5 | 227.6 (+50%) | 65.2 |
+| 16 | 16B | 78.1 | 84.7 | 86.7 (+11%) | 65.2 |
+| 16 | 128B | 191.2 | 196.9 | 199.0 (+4%) | 177.4 |
+| 1024 | 128B | 183.6 | 185.4 | 185.5 (+1%) | 177.4 |
+
+원인: Arena가 aligned 할당을 16B로 정렬(entry당 +2.8B), InlineSkipList bucket마다 `seq_splice_`
+(bucket당 +63B), `prefix_list_` node(prefix당 약 33B). total-order iterator 1개 생성 시 RSS는
+upstream +19.8MB(1M key), HEAD 0.
+
+### 3.2 skiplist 높이 (bucket 하나에 random insert, value 16B)
+
+| 높이 | n | SkipList | InlineSkipList |
+|---|---|---|---|
+| 4 | 50K / 100K | 0.174s / 0.686s | 0.181s / 0.700s |
+| 12 | 50K / 100K | 0.057s / 0.116s | 0.054s / 0.114s |
+| 12 | 1M | 2.63s | 2.25s (-14%) |
+
+높이 4에서는 둘 다 O(n²). InlineSkipList 고유 이득은 key inline과 소프트웨어 PREFETCH로 5~14%.
+
+### 3.3 쓰기 회귀와 수정 (op_trade_bench, 512MB, 1.5M 거래, flush 없음, WAL 끔)
+- 메모 이전 HEAD: upstream 대비 -25~31% (`AddPrefix`를 뺀 빌드는 동등 → `prefix_list_` 탐색이 원인)
+- 메모 이후(7라운드 중앙값): upstream 408,779 / HEAD 401,396 (-1.8%) / 탐색 제거판 400,171 (-2.1%)
+
+### 3.4 flush (memtable 하나를 거의 채운 뒤 `DB::Flush()`, 5~7라운드 중앙값)
+
+| 조건 | upstream | HEAD | SkipList |
+|---|---|---|---|
+| 40만 건(64MB급), 거래 로그 key | 350.8 ms | 242.7 ms (-30.8%) | 238.4 ms |
+| 300만 건(512MB급), 거래 로그 key | 3,205 ms | 2,230 ms (-30.4%) | 2,250 ms |
+| 512MB, 280만 건, 계좌 key | 2,584 ms | 2,031 ms (-21.4%) | 1,803 ms |
+| 1GB, 560만 건, 계좌 key | 7,896 ms | 3,963 ms (-49.8%) | 4,802 ms |
+
+HEAD는 초당 약 140만 건으로 일정, upstream은 크기가 클수록 느려짐(정렬용 복사가 O(n log n)).
+자동 flush(64MB 기본, 단일 스레드)에서도 평균 flush 시간이 22~24% 짧았다. 단, flush는
+백그라운드라 stall이 없으면 처리량 숫자에는 드러나지 않는다.
+
+### 3.5 단일 스레드 쓰기 (기본 64MB, 200만 거래, 5라운드 중앙값, ops/s)
+
+| 모드 | key | HEAD | upstream | SkipList |
+|---|---|---|---|---|
+| 큐 + WAL 켬 | 거래 로그 `trade_종목\|t_id` | 91,601 | 93,282 | 62,179 |
+| 큐 + WAL 켬 | 계좌 `trade_종목\|계좌\|t_id` | 73,387 | 73,780 | 64,282 |
+| preload + WAL 끔 | 거래 로그 | 963,267 | 976,852 | 448,622 |
+| preload + WAL 끔 | 계좌 | 495,326 | 494,448 | 416,196 |
+
+### 3.6 멀티 스레드 쓰기 (preload, 512MB, 200만, WAL 끔, key 하나씩, 3라운드 중앙값, ops/s)
+
+| key | 스레드 | HEAD 동시 켬 | HEAD 끔 | upstream | SkipList 켬 |
+|---|---|---|---|---|---|
+| 거래 로그 | 1 / 4 / 8 | 947K / 525K / 453K | 946K / 817K / 654K | 987K / 830K / 655K | 297K / 417K / 380K |
+| 계좌 | 1 / 4 / 8 | 306K / **433K / 427K** | 312K / 301K / 248K | 266K / 276K / 225K | 265K / 348K / 335K |
+
+- 시간순 key: 여러 스레드가 같은 bucket 끝에 몰리고 단일 스레드 insert가 이미 싸서(splice 재사용)
+  동시 쓰기가 손해. 끄면 upstream과 같다.
+- 계좌 key: bucket 안 삽입 위치가 흩어져 동시 쓰기가 확장. 8스레드에서 upstream의 1.9배.
+- 입력을 무작위로 섞어도 같은 경향(8스레드 HEAD 520K vs upstream 226K).
+- WriteBatch(16/64/256)로 묶어도 hash 계열은 1스레드에서 이미 약 200만 ops/s라 확장되지 않음.
+  SkipList만 최대 2.57배 확장.
+- 큐 모드에서 소비자를 늘리면 큐 lock이 먼저 병목(4소비자 약 10만 ops/s). 확장성은 `--preload`로 잴 것.
+
+## 4. 정정된 가설 (발표 때 주의)
+
+| 이전 주장 | 실제 |
+|---|---|
+| InlineSkipList로 바꿔 선형 성능 저하가 사라졌다 (보고서 3차) | 같은 커밋(연구 브랜치 867c686cf)에서 skiplist 높이 기본값을 4→12로 바꾼 효과. 높이가 같으면 둘 다 같다 |
+| 노드 인접 할당 + L3 PREFETCH가 성능을 지배한다 (보고서 4차 7쪽) | 실재하지만 5~14%, 하드웨어가 아닌 소프트웨어 PREFETCH |
+| 보고서 3차 prefix 3~5 비교 | db_bench key(앞 8바이트 big-endian)라 prefix 3~5는 bucket 하나. bucket 구조·높이·memtable 크기(64MB vs 1GB) 세 변수가 동시에 다름 |
+| 보고서 4차 동시성 실험의 lock 경합 해석 | fixed:7 + 7자리 미만 key(약 1/3)가 도메인 밖이라 footer까지 prefix로 읽음. 결과가 오염됐을 수 있음 |
+| (이번 작업 중) HEAD flush가 upstream보다 느리다 | 1회 측정의 편차. 반복 측정에서는 HEAD가 30% 빠름 |
+| (이번 작업 중) 메모 후에도 13% 느리다 | 3라운드 편차. 7라운드에서는 동등 |
+
+## 5. 도구
+
+### 5.1 op_trade_bench (`op_trade_bench/`)
+TPC-E Trade.txt를 생산자 → 큐 → 소비자로 RocksDB에 Put한다. 요구사항 원문은 `op_trade_bench/CLAUDE.md`.
+
+```bash
+op_trade_bench/build.sh          # ~/rocksdb/build-rel/librocksdb.so에 링크, -fno-rtti 필수
+op_trade_bench/out/op_trade_bench --memtable=HEAD|UPSTREAM|SKIPLIST [옵션]
+```
+
+| 옵션 | 의미 |
+|---|---|
+| `--limit=N` | 생산 건수(기본 1M). 파일보다 많으면 처음부터 다시 돌며 key에 `#회차`를 붙임 |
+| `--key_format=symb_tid\|symb_acct_tid` | `trade_종목\|t_id`(기본, 시간순) 또는 `trade_종목\|계좌\|t_id`(흩어짐) |
+| `--write_buffer_size=512MB` | memtable 크기(K/M/G 접미사) |
+| `--disable_wal` | WAL 끔 |
+| `--consumers=N` | 쓰기 스레드 수 |
+| `--preload` | KV를 먼저 메모리에 만들고 큐 없이 쓰기만 측정 |
+| `--batch=N` | WriteBatch 크기(`--preload` 필요) |
+| `--concurrent=0\|1` | `allow_concurrent_memtable_write` 강제. 지원 안 하는 memtable에 1이면 오류 |
+| `--shuffle` | preload한 KV 순서를 섞음(seed 42) |
+| `--flush_at_end` | 적재 후 `DB::Flush()` 시간을 측정 (`final_flush_ms`) |
+| `--queue=N`, `--progress_ms=N`, `--input=`, `--db=` | 큐 크기, 진행 출력 주기, 입력, DB 경로 |
+
+- prefix 추출기: 첫 `|`까지(구분자 포함). key 끝은 길이로 정해지므로 t_id 뒤에 구분자가 필요 없다.
+- UPSTREAM은 `e591f5f1a`의 `hash_skiplist_rep.cc`를 이름만 바꿔 내장(`upstream_hash_skiplist_rep.cc`, `gen_upstream.sh`로 재생성). 그래서 한 바이너리로 세 memtable을 비교한다.
+- 다른 커밋의 HEAD를 쓰려면 `LD_LIBRARY_PATH=$WORK/libs/<이름>`(RUNPATH보다 우선).
+- 마지막 줄 `RESULT key=value ...`를 스크립트가 파싱한다. "queue+put latency"는 큐가 늘 가득 차 있어 의미가 없다(큐 길이 ÷ 처리량).
+
+### 5.2 웹 앱 (Spring Boot 3.5.9, Java 21, Gradle 8.10 wrapper)
+```bash
+./gradlew build && java -jar build/libs/rocksdb-demo-0.1.0.jar   # http://127.0.0.1:8080
+bench/build.sh                                                     # 메모리/높이 벤치(mem_bench)
+```
+- `src/main/resources/catalog.json`이 테스트 목록이다. `runnable` 항목은 정의된 명령만 실행하며 한 번에 하나씩 돈다. `${root}`는 `~/rocksdb`, `${bench}`는 `bench/out`이다.
+- localhost에만 바인딩된다. 단위 테스트 3개, mem_bench 2개가 실행 가능 항목이다.
+- **카탈로그는 2026-11-10 상태다.** 3.3절 이후 결과(메모, flush, 멀티 스레드, key 형식)는 아직 반영되지 않았다.
+
+### 5.3 실험 스크립트
+`experiments/README.md` 참고. 라이브러리 빌드는 `experiments/scripts/build_libs.sh`.
+
+### 5.4 RocksDB 빌드와 테스트 (`~/rocksdb`)
+```bash
+# Debug(테스트): 기존 build/ 디렉터리, WITH_TESTS, FAIL_ON_WARNINGS
+cd build && make -j3 db_memtable_test prefix_test inlineskiplist_test
+./db_memtable_test --gtest_filter='*HashSkipList*'
+# Release 공유 라이브러리
+cd build-rel && cmake .. -DCMAKE_BUILD_TYPE=Release -DWITH_TESTS=OFF -DWITH_BENCHMARK_TOOLS=OFF \
+  -DWITH_TOOLS=OFF -DWITH_CORE_TOOLS=OFF -DWITH_GFLAGS=OFF -DFAIL_ON_WARNINGS=OFF -DROCKSDB_BUILD_SHARED=ON
+make -j3 rocksdb-shared
+# 포맷
+git clang-format   # clang-format 23.1.5가 ~/.local/bin에 있음
+```
+- WSL 7GB에서 `-j20`은 OOM. `-j3`~`-j6`.
+- `inlineskiplist_test`는 Debug에서 약 4분 걸린다.
+- 테스트 바이너리는 `librocksdb.so`에 RUNPATH로 링크된다.
+
+## 6. 측정 방법론 (지킬 것)
+1. 비교할 구성을 **같은 세션에서 번갈아**, 라운드마다 순서를 바꿔 돌린다.
+2. 5~7라운드, **중앙값**과 각 실행 값을 함께 기록한다. 실행 범위가 겹치면 "차이 없음"으로 본다.
+3. `taskset`으로 코어를 고정한다.
+4. 자동 flush가 끼면 안 되는 측정은 결과의 `flushes=0`을 확인한다.
+5. 큰 memtable이나 preload는 사용 가능 메모리를 먼저 본다. swap이 끼면 무효다.
+6. 쉘 스크립트는 bash로 돌린다(zsh는 `$VAR`에 담은 인자를 나누지 않음).
+7. 가설이 맞는지 **통제 실험으로 한 변수만 바꿔** 확인한다(높이 오귀속 사례).
+
+## 7. 남은 일 (우선순위 순)
+1. **회귀 테스트 묶음 재실행**: 9d92aecc1, 2561b92b7 이후 db_test, db_iterator_test, db_bloom_filter_test, db_tailing_iter_test, perf_context_test, options_test를 아직 돌리지 않았다(3커밋 시점에는 모두 통과).
+2. **서버에서 3절 전체 재측정** 후 이 문서의 표 갱신.
+3. **읽기 측정**: point lookup(Get)은 한 번도 재지 않았다. 시나리오 2의 "prefix 그룹 분석 쿼리"와 "랜덤 점/범위 조회"를 op_trade_bench에 추가해야 한다(현재는 쓰기와 flush만).
+4. **실시간 지표(Prometheus/Grafana)**: 설계만 했다. op_trade_bench에 `--metrics_port`로 `/metrics` 노출(RocksDB `EventListener`의 `OnFlushBegin/OnFlushCompleted`로 flush 시간, Put 카운터와 지연, memtable 크기, write stall, `/proc/self` 기반 CPU와 RSS), `monitoring/`에 docker compose(Prometheus 1초 수집, Grafana 대시보드). flush를 이벤트 단위로 보여주려면 Spring이 stdout을 받아 SSE로 미는 방식이 더 맞다.
+5. **시연 시나리오 2의 나머지**: session/login/event 생산자(무작위 ID → 동시 쓰기 켬 시연), 7GB에서는 memtable 512MB 이하.
+6. **웹 카탈로그 갱신**: 3.3절 이후 결과를 기록 항목으로, op_trade_bench 실행 항목 추가.
+7. (선택) HashSkipListRepFactory 주석에 "prefix 안에서 key가 증가하는 워크로드는 `allow_concurrent_memtable_write=false` 권장" 추가.
+8. (선택) 도메인 밖 key insert 처리(예: key 전체를 prefix로). upstream에서 물려받은 문제.
+9. (선택) upstream PR. `KeyComparator::user_comparator()` public API 추가가 리뷰 쟁점. 대안은 prefix를 internal key 형식으로 저장해 기존 comparator를 재사용(비교 시 복사 비용).
+
+## 8. 서버 이전 체크리스트
+- [ ] `~/rocksdb` 브랜치 이동. facebook에는 push 권한이 없으므로 개인 fork에 push하거나
+      `git bundle create hsl.bundle e591f5f1a..hash_skiplist_improvements`로 옮겨 서버의 rocksdb clone(main을 e591f5f1a 이상으로)에서 `git fetch hsl.bundle hash_skiplist_improvements:hash_skiplist_improvements`.
+- [ ] `~/rocksdb-demo` 이동(이 저장소). 원격이 없으니 개인 원격에 push하거나 bundle.
+- [ ] TPC-E 데이터: `~/tpc-e/flat_out` 복사(5.7GB) 또는 서버에서 EGen으로 같은 설정(5000 customers, SF 500, 300 days) 재생성.
+- [ ] 도구: g++ 11+, cmake 3.22+, JDK 21, Docker(Prometheus/Grafana용), python3.
+- [ ] 경로: `op_trade_bench`의 기본 입력이 `/home/psmsq4/tpc-e/flat_out/Trade.txt`로 하드코딩되어 있다(`--input`으로 바꾸거나 상수 수정). 스크립트는 `$HOME/rocksdb-demo`, `$HOME/rocksdb`를 가정한다.
+- [ ] `taskset` 코어 번호를 서버 토폴로지에 맞게 수정.
+- [ ] (선택) Claude 작업 메모 디렉터리 복사. 서버의 프로젝트 경로에 맞는 디렉터리 이름으로 옮겨야 한다.
