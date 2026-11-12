@@ -90,6 +90,7 @@ public class BenchController {
     private Map<String, Object> describe(Benchmark b) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", b.id());
+        m.put("kind", b.kind());
         m.put("title", b.title());
         m.put("summary", b.summary());
         m.put("targets", b.targets());

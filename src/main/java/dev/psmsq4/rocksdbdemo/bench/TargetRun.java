@@ -43,6 +43,8 @@ public final class TargetRun {
     private double prevT = -1;
     private double prevConsumed;
     private double prevCpu;
+    private double prevScans = -1;
+    private double prevScanSec;
 
     TargetRun(String memtable, String cpuSet, int logLines) {
         this.memtable = memtable;
@@ -178,6 +180,7 @@ public final class TargetRun {
         // read after exit) the delta would mix in idle time.
         boolean loading = g.getOrDefault("otb_phase", 0.0) == 2.0;
         double dt = prevT < 0 || !loading ? 0 : t - prevT;
+        double scanDt = prevT < 0 ? 0 : t - prevT;
         Map<String, Object> s = new LinkedHashMap<>();
         s.put("t", round(t, 3));
         s.put("phase", g.getOrDefault("otb_phase", 0.0).intValue());
@@ -198,6 +201,20 @@ public final class TargetRun {
         s.put("flushSec", g.get("otb_flush_seconds_total"));
         s.put("loadSec", g.get("otb_load_elapsed_seconds"));
         s.put("finalFlushMs", g.get("otb_final_flush_ms"));
+        // Range scans: rate and average latency since the previous scrape.
+        int phase = g.getOrDefault("otb_phase", 0.0).intValue();
+        Double scans = g.get("otb_scans_total");
+        Double scanSec = g.get("otb_scan_seconds_total");
+        if (scans != null && scanSec != null) {
+            s.put("scanMode", g.get("otb_scan_mode"));
+            s.put("scanProgress", g.get("otb_scan_progress"));
+            double ds = prevScans < 0 ? 0 : scans - prevScans;
+            boolean scanning = phase == 5 || phase == 6;
+            s.put("scanOps", scanning && scanDt > 0.05 && prevScans >= 0 ? round(ds / scanDt, 1) : null);
+            s.put("scanAvgUs", scanning && ds > 0 ? round((scanSec - prevScanSec) / ds * 1e6, 2) : null);
+            prevScans = scans;
+            prevScanSec = scanSec;
+        }
         Map<String, Double> write = newHistograms.get("rocksdb.db.write.micros");
         s.put("writeP99", write == null ? null : write.get("p99"));
         samples.add(s);

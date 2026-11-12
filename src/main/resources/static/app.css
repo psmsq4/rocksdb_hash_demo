@@ -87,6 +87,7 @@ button { font: inherit; color: inherit; }
   margin: 0;
   color: var(--ink-2);
   font-size: 13px;
+  text-align: right;
   white-space: nowrap;
 }
 
@@ -459,7 +460,7 @@ button { font: inherit; color: inherit; }
   background: var(--panel);
   overflow: hidden;
 }
-.stepper-sm { grid-template-columns: 36px 56px 36px; }
+.stepper-sm { grid-template-columns: 36px 72px 36px; }
 .step {
   border: 0;
   background: transparent;
@@ -927,7 +928,8 @@ button { font: inherit; color: inherit; }
   :root { --card-h: auto; --pad: 16px; }
   .topbar { padding: 0 16px; height: 52px; }
   .brand { font-size: 15px; }
-  .author { font-size: 12px; }
+  .author { font-size: 11px; line-height: 1.35; word-break: keep-all; }
+  .author span { display: block; }
   .page { padding: 20px 16px 48px; }
   .card-head {
     grid-template-columns: 96px 1px minmax(0, 1fr);

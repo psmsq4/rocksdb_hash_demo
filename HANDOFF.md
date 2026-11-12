@@ -199,6 +199,7 @@ op_trade_bench/out/op_trade_bench --memtable=HEAD|UPSTREAM|SKIPLIST [옵션]
 | `--metrics_dump=PATH` | 적재와 최종 flush 후 같은 지표를 파일로 남김(종료 후에도 최종값을 읽기 위함) |
 | `--print_samples=N` | 만든 KV 중 N개를 고른 간격으로 `SAMPLE <순번> <key>\t<value>` 줄로 출력(대시보드의 KV 샘플 패널용) |
 | `--hash_height=N` | HEAD, UPSTREAM bucket skiplist 높이(기본 4 = RocksDB 기본, SKIPLIST는 항상 12). 대시보드 기본은 12 |
+| `--scan_seconds=S`, `--scan_length=N` | 적재 후 flush 없이 prefix scan(`prefix_same_as_start`)을 S초, total-order scan(`total_order_seek`)을 S초. scan마다 iterator를 새로 열고 적재한 key 약 6.5만 개 중 하나로 seek한 뒤 최대 N개(기본 100)를 읽는다. RESULT에 `scan_prefix_*`, `scan_total_*`(횟수, 초당, 평균/p50/p99 µs) |
 
 - prefix 추출기: 첫 `|`까지(구분자 포함). key 끝은 길이로 정해지므로 t_id 뒤에 구분자가 필요 없다.
 - UPSTREAM은 `e591f5f1a`의 `hash_skiplist_rep.cc`를 이름만 바꿔 내장(`upstream_hash_skiplist_rep.cc`, `gen_upstream.sh`로 재생성). 그래서 한 바이너리로 세 memtable을 비교한다.
@@ -214,7 +215,10 @@ op_trade_bench/build.sh                                            # 측정기 �
 - 저장소 루트에서 실행할 것. 측정기 경로(`demo.bench-binary`)가 실행 위치 기준이다.
 - 카드 하나가 벤치마크 하나다(`bench/BenchmarkCatalog.java`). 시작 버튼을 누르면 HEAD, UPSTREAM, SKIPLIST를 동시에 띄우고 `demo.cpu-sets`(기본 2-5, 6-9, 10-13)로 코어를 나눈다. 백엔드(`bench/RunService.java`)가 각 프로세스의 `/metrics`를 1초마다 긁어 시계열로 쌓고, 페이지가 1초마다 `GET /api/benchmarks/{id}/run`으로 받아 그린다(uPlot, `static/vendor`). 측정은 한 번에 하나다.
 - 첫 카드는 flush: 1,000만 건, 64MB memtable, WAL 끔, 마지막에 `DB::Flush`. 세 개를 동시에 돌려 가장 느린 SKIPLIST가 약 22초.
-- 카드의 톱니 버튼이 설정 모달을 연다. KV 개수(100,000 단위, 최대 3,000만), memtable 크기(64MB 또는 128MB 단위, 최대 2GB), key 형식(하나만 선택), bucket 높이(4 또는 12, 기본 12), preload, WAL, 소비자 개수(1~8). 설정은 서버 메모리에 카드별로 저장되고(재시작하면 기본값) 다음 측정부터 적용된다. 검증과 인자 변환은 `bench/RunSettings.java`.
+- 두 번째 카드는 멀티 스레드 쓰기: 800만 건, preload, 소비자 4개, 512MB, 계좌 key, WAL 끔, 높이 12, 동시 memtable 쓰기 켬. HEAD와 SKIPLIST는 memtable에 동시에 넣고, UPSTREAM은 지원하지 않아 쓰기 그룹 리더 한 스레드가 넣는다. 가장 느린 UPSTREAM이 약 25초. 서버에서 HEAD 약 63만, SKIPLIST 약 44만, UPSTREAM 약 37만 ops/s, Put p99 9.9 / 11.1 / 20.1µs. UPSTREAM도 CPU를 약 400% 쓰는데, 리더를 기다리며 도는 시간이다.
+- 카드 종류(`Benchmark.kind`)에 따라 화면이 다르다. flush는 평균 flush 시간과 flush 그래프를, write는 처리량, Put 지연, CPU를 앞에 둔다(`app.js`의 `VIEWS`).
+- 세 번째 카드는 range scan: 200만 건, 512MB(flush 없이 memtable에 다 들어감), 시간순 key, preload, 높이 12, prefix scan 8초 + total-order scan 8초, scan 길이 100. 약 21초. 서버에서 p50은 prefix scan HEAD 18.6 / SKIPLIST 19.1 / UPSTREAM 29.3µs, total-order scan HEAD 19.6 / SKIPLIST 19.1µs / UPSTREAM 308ms(약 15,700배, 8초에 26회). UPSTREAM은 total-order iterator를 열 때마다 memtable 200만 건을 새 skiplist로 복사한다. 지연 그래프는 로그 눈금이다.
+- 카드의 톱니 버튼이 설정 모달을 연다. KV 개수(100,000 단위, 최대 3,000만), memtable 크기(64MB 또는 128MB 단위, 최대 2GB), key 형식(하나만 선택), bucket 높이(4 또는 12, 기본 12), preload, WAL, 동시 memtable 쓰기(HEAD/SKIPLIST, 기본 켬), 소비자 개수(1~8, 프로세스마다 CPU 4개라 4 이하 권장). 설정은 서버 메모리에 카드별로 저장되고(재시작하면 기본값) 다음 측정부터 적용된다. 검증과 인자 변환은 `bench/RunSettings.java`.
 - 측정을 시작하면 카드 오른쪽에 KV 샘플 패널이 열리고, 카드와 패널이 한 블록으로 가운데 정렬된다. 샘플은 측정기가 실제로 만든 KV 8개(`--print_samples=8`)이고, 워크로드 특성은 `bench/WorkloadProfile.java`가 Trade.txt 앞 200만 행에서 구한 값(종목 3,425개, 종목별 거래 수, key/value 평균 크기)으로 쓴다. 화면 폭 1100px 이하에서는 패널이 카드 아래로 내려간다.
 - 각 프로세스는 `perf stat`(카운팅만, `demo.perf-counters`)으로 감싸 실행하고, 측정이 끝나면 펼친 화면의 "하드웨어 카운터"에 KV당 사이클, 명령어, IPC, L1/dTLB/LLC 미스를 보여준다(`bench/PerfStat.java`). 하이브리드 CPU라 `cpu_core/<event>/u`를 쓰고 P코어에 고정해야 읽힌다. 시작할 때 P코어에서 한 번 시험해 안 되면 카운터 없이 측정만 한다. 중단 버튼은 perf의 자식(측정기)까지 끈다.
 - 모달의 예상 소요 시간은 세 개 동시 실행에서 잰 SKIPLIST 속도로 계산한다(큐 47만/s, 큐+WAL 30만/s, preload 64만/s, preload+WAL 38만/s, 계좌 key는 0.87배, 고정 1초). 제한 시간은 없다. 측정은 끝날 때까지 돌고, 멈추려면 측정 중인 다이얼을 누른다.
@@ -254,10 +258,10 @@ git clang-format   # clang-format 23.1.5가 ~/.local/bin에 있음
 ## 7. 남은 일 (우선순위 순)
 1. **회귀 테스트 묶음 재실행**: 9d92aecc1, 2561b92b7 이후 db_test, db_iterator_test, db_bloom_filter_test, db_tailing_iter_test, perf_context_test, options_test를 아직 돌리지 않았다(3커밋 시점에는 모두 통과).
 2. **서버에서 3절 전체 재측정** 후 이 문서의 표 갱신.
-3. **읽기 측정**: point lookup(Get)은 한 번도 재지 않았다. 시나리오 2의 "prefix 그룹 분석 쿼리"와 "랜덤 점/범위 조회"를 op_trade_bench에 추가해야 한다(현재는 쓰기와 flush만).
+3. **읽기 측정**: range scan(prefix, total-order)은 측정기 `--scan_seconds`와 대시보드 세 번째 카드로 넣었다. point lookup(Get)은 아직 한 번도 재지 않았다. 시나리오 2의 "prefix 그룹 분석 쿼리"와 "랜덤 점/범위 조회"를 op_trade_bench에 추가해야 한다(현재는 쓰기와 flush만).
 4. **실시간 지표**: op_trade_bench `--metrics_port`와 웹 대시보드(5.2절)로 구현했다. 남은 것은 Prometheus/Grafana 연동(선택)이다. 원래 설계: op_trade_bench에 `--metrics_port`로 `/metrics` 노출(RocksDB `EventListener`의 `OnFlushBegin/OnFlushCompleted`로 flush 시간, Put 카운터와 지연, memtable 크기, write stall, `/proc/self` 기반 CPU와 RSS), `monitoring/`에 docker compose(Prometheus 1초 수집, Grafana 대시보드). flush를 이벤트 단위로 보여주려면 Spring이 stdout을 받아 SSE로 미는 방식이 더 맞다.
 5. **시연 시나리오 2의 나머지**: session/login/event 생산자(무작위 ID → 동시 쓰기 켬 시연), 7GB에서는 memtable 512MB 이하.
-6. **웹 대시보드 카드 추가**: flush 다음으로 멀티 스레드 쓰기, key 형식, 읽기 측정 카드.
+6. **웹 대시보드 카드 추가**: flush, 멀티 스레드 쓰기, range scan 다음으로 point lookup(Get) 카드. 측정기에 Get부터 넣어야 한다(3번).
 7. (선택) HashSkipListRepFactory 주석에 "prefix 안에서 key가 증가하는 워크로드는 `allow_concurrent_memtable_write=false` 권장" 추가.
 8. (선택) 도메인 밖 key insert 처리(예: key 전체를 prefix로). upstream에서 물려받은 문제.
 9. (선택) upstream PR. `KeyComparator::user_comparator()` public API 추가가 리뷰 쟁점. 대안은 prefix를 internal key 형식으로 저장해 기존 comparator를 재사용(비교 시 복사 비용).

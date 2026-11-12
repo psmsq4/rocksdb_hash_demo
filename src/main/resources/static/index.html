@@ -11,7 +11,7 @@
 <body>
   <header class="topbar">
     <h1 class="brand">HASH(Rocksdb)</h1>
-    <p class="author">소프트웨어학과 21학번 신승호</p>
+    <p class="author"><span>[돌디비] 단국대학교</span> <span>소프트웨어학과 21학번 신승호</span></p>
   </header>
 
   <main class="page">
@@ -166,13 +166,46 @@
 
         <div class="field">
           <div class="field-label">
+            <span id="set-concurrent-label">동시 memtable 쓰기</span>
+            <span class="field-hint">HEAD, SKIPLIST만 해당. UPSTREAM은 지원하지 않아 항상 끔</span>
+          </div>
+          <button type="button" class="switch" role="switch" aria-checked="false"
+                  aria-labelledby="set-concurrent-label" data-field="concurrent"><i></i><span></span></button>
+        </div>
+
+        <div class="field">
+          <div class="field-label">
             <label for="set-consumers">소비자 개수</label>
-            <span class="field-hint">Put을 하는 쓰기 스레드</span>
+            <span class="field-hint">Put을 하는 쓰기 스레드. 프로세스마다 CPU 4개라 4 이하를 권합니다</span>
           </div>
           <div class="stepper stepper-sm" data-field="consumers">
             <button type="button" class="step" data-dir="-1" aria-label="소비자 줄이기">−</button>
             <input id="set-consumers" class="step-value" inputmode="numeric" autocomplete="off">
             <button type="button" class="step" data-dir="1" aria-label="소비자 늘리기">+</button>
+          </div>
+        </div>
+
+        <div class="field" data-kinds="scan">
+          <div class="field-label">
+            <label for="set-scan-seconds">scan 시간</label>
+            <span class="field-hint">prefix scan과 total-order scan을 각각 이만큼</span>
+          </div>
+          <div class="stepper stepper-sm" data-field="scanSeconds">
+            <button type="button" class="step" data-dir="-1" aria-label="scan 시간 줄이기">−</button>
+            <input id="set-scan-seconds" class="step-value" inputmode="numeric" autocomplete="off">
+            <button type="button" class="step" data-dir="1" aria-label="scan 시간 늘리기">+</button>
+          </div>
+        </div>
+
+        <div class="field" data-kinds="scan">
+          <div class="field-label">
+            <label for="set-scan-length">scan 길이</label>
+            <span class="field-hint">scan 한 번에 읽는 entry 수, 10개 단위</span>
+          </div>
+          <div class="stepper stepper-sm" data-field="scanLength">
+            <button type="button" class="step" data-dir="-1" aria-label="scan 길이 줄이기">−</button>
+            <input id="set-scan-length" class="step-value" inputmode="numeric" autocomplete="off">
+            <button type="button" class="step" data-dir="1" aria-label="scan 길이 늘리기">+</button>
           </div>
         </div>
 

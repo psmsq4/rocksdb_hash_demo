@@ -8,7 +8,13 @@
 //                  [--consumers=N] [--preload] [--batch=N] [--concurrent=0|1]
 //                  [--shuffle] [--key_format=symb_tid|symb_acct_tid]
 //                  [--progress_ms=N] [--metrics_port=N] [--metrics_dump=PATH]
-//                  [--print_samples=N]
+//                  [--print_samples=N] [--scan_seconds=S] [--scan_length=N]
+//
+// --scan_seconds runs range scans after the load, while the KVs are still in
+// the memtable: S seconds of prefix scans (within one symbol) and then S
+// seconds of total-order scans (across symbols). Each scan opens a new
+// iterator, seeks to a key the run wrote and reads up to --scan_length
+// entries.
 //
 // --metrics_port serves Prometheus text metrics at http://127.0.0.1:N/metrics
 // while the program runs (0 picks a free port; the port is printed as
@@ -66,6 +72,7 @@ using ROCKSDB_NAMESPACE::DB;
 using ROCKSDB_NAMESPACE::EventListener;
 using ROCKSDB_NAMESPACE::FlushJobInfo;
 using ROCKSDB_NAMESPACE::HistogramData;
+using ROCKSDB_NAMESPACE::ReadOptions;
 using ROCKSDB_NAMESPACE::Options;
 using ROCKSDB_NAMESPACE::Slice;
 using ROCKSDB_NAMESPACE::SliceTransform;
@@ -305,11 +312,17 @@ bool SplitTrade(std::string_view line, std::string_view* fields) {
 struct KvSampler {
   uint64_t count = 0;
   uint64_t stride = 1;
+  // Also keeps every keep_stride-th key here, as scan start keys.
+  std::vector<std::string>* keep = nullptr;
+  uint64_t keep_stride = 1;
 
   KvSampler(uint64_t n, uint64_t limit)
       : count(n), stride(n == 0 ? 1 : std::max<uint64_t>(1, limit / n)) {}
 
   void Maybe(uint64_t index, const std::string& key, const std::string& value) const {
+    if (keep != nullptr && index % keep_stride == 0) {
+      keep->push_back(key);
+    }
     if (count == 0 || index % stride != 0 || index / stride >= count) {
       return;
     }
@@ -716,6 +729,8 @@ struct Args {
   int metrics_port = -1;      // -1: no metrics server
   std::string metrics_dump;
   uint64_t print_samples = 0;
+  double scan_seconds = 0;     // per scan kind; 0: no scans
+  uint64_t scan_length = 100;  // entries read per scan
   int hash_height = 4;  // bucket skiplist height of HEAD and UPSTREAM
 };
 
@@ -756,6 +771,10 @@ void Usage(const char* prog) {
           "  --metrics_dump=PATH  write the final metrics to PATH\n"
           "  --hash_height=N  skiplist height in each HEAD/UPSTREAM bucket "
           "(default 4, the RocksDB default; SKIPLIST uses 12)\n"
+          "  --scan_seconds=S  after the load, S seconds of prefix scans and then S "
+          "seconds\n"
+          "                 of total-order scans, a new iterator per scan\n"
+          "  --scan_length=N  entries read per scan (default 100)\n"
           "  --print_samples=N  print N produced key-values, evenly spaced, as "
           "SAMPLE lines\n"
           "  --consumers=N  writer threads (default 1)\n"
@@ -842,6 +861,14 @@ bool ParseArgs(int argc, char** argv, Args* args) {
         fprintf(stderr, "--hash_height must be 1..32\n");
         return false;
       }
+    } else if (value_of("--scan_seconds", &v)) {
+      args->scan_seconds = atof(v.c_str());
+      if (args->scan_seconds < 0) {
+        fprintf(stderr, "--scan_seconds must be >= 0\n");
+        return false;
+      }
+    } else if (value_of("--scan_length", &v)) {
+      args->scan_length = std::max<uint64_t>(1, strtoull(v.c_str(), nullptr, 10));
     } else if (value_of("--print_samples", &v)) {
       args->print_samples = strtoull(v.c_str(), nullptr, 10);
     } else if (arg == "--disable_wal") {
@@ -964,7 +991,16 @@ int main(int argc, char** argv) {
   ProducerStats producer_stats;
   std::vector<ConsumerStats> per_consumer(static_cast<size_t>(args.consumers));
 
-  // 0 open, 1 preload, 2 load, 3 final flush, 4 done
+  // Range scan progress, read by the metrics server.
+  std::atomic<int> scan_mode{0};  // 0 none, 1 prefix, 2 total order
+  std::atomic<bool> scans_finished{false};
+  std::atomic<uint64_t> scan_mode_start{0};
+  std::atomic<uint64_t> scans_done{0};
+  std::atomic<uint64_t> scan_ns_total{0};
+  std::atomic<uint64_t> scan_entries_total{0};
+
+  // 0 open, 1 preload, 2 load, 5 prefix scans, 6 total-order scans,
+  // 3 final flush, 4 done
   std::atomic<int> phase{0};
   std::atomic<uint64_t> load_start_ns{0};
   std::atomic<uint64_t> load_end_ns{0};
@@ -1031,6 +1067,20 @@ int main(int argc, char** argv) {
     Metric(&out, "otb_flush_seconds_total", flush_ms_sum / 1e3);
     Metric(&out, "otb_flush_last_ms", events.empty() ? 0 : events.back().ms);
     Metric(&out, "otb_final_flush_ms", final_flush_ms_live.load());
+    if (args.scan_seconds > 0) {
+      const int mode = scan_mode.load();
+      double progress = scans_finished.load() ? 1.0 : 0.0;
+      if (mode > 0) {
+        const double in_mode = std::min(args.scan_seconds,
+                                        (now - scan_mode_start.load()) / 1e9);
+        progress = ((mode - 1) * args.scan_seconds + in_mode) / (2 * args.scan_seconds);
+      }
+      Metric(&out, "otb_scan_mode", mode);
+      Metric(&out, "otb_scan_progress", progress);
+      Metric(&out, "otb_scans_total", static_cast<double>(scans_done.load()));
+      Metric(&out, "otb_scan_seconds_total", scan_ns_total.load() / 1e9);
+      Metric(&out, "otb_scan_entries_total", static_cast<double>(scan_entries_total.load()));
+    }
 
     const ProcessSample proc = SampleProcess();
     Metric(&out, "otb_process_cpu_seconds_total", proc.cpu_s);
@@ -1072,7 +1122,13 @@ int main(int argc, char** argv) {
     fflush(stdout);
   }
 
-  const KvSampler sampler(args.print_samples, args.limit);
+  KvSampler sampler(args.print_samples, args.limit);
+  std::vector<std::string> scan_keys;  // scan start keys, about 64K
+  if (args.scan_seconds > 0) {
+    sampler.keep = &scan_keys;
+    sampler.keep_stride = std::max<uint64_t>(1, args.limit / 65536);
+    scan_keys.reserve(65536 + 1);
+  }
 
   // With --preload the KVs are built before the timed load.
   std::vector<TradeKV> preloaded;
@@ -1173,6 +1229,59 @@ int main(int argc, char** argv) {
   const uint64_t stall_us =
       options.statistics->getTickerCount(ROCKSDB_NAMESPACE::STALL_MICROS);
 
+  // Range scans while the KVs are still in the memtable. Each scan opens a
+  // new iterator, as a query would: for UPSTREAM a total-order iterator
+  // copies the whole memtable first.
+  struct ScanResult {
+    uint64_t scans = 0;
+    uint64_t entries = 0;
+    uint64_t errors = 0;
+    LatencyHistogram latency;
+  };
+  ScanResult scan_results[2];
+  if (args.scan_seconds > 0 && !scan_keys.empty()) {
+    std::mt19937_64 rng(7);
+    for (int mode = 1; mode <= 2; ++mode) {
+      ReadOptions ro;
+      if (mode == 1) {
+        ro.prefix_same_as_start = true;  // stay within the seek key's symbol
+      } else {
+        ro.total_order_seek = true;
+      }
+      ScanResult& res = scan_results[mode - 1];
+      const uint64_t start = NowNanos();
+      scan_mode_start = start;
+      scan_mode = mode;
+      phase = 4 + mode;
+      const uint64_t end = start + static_cast<uint64_t>(args.scan_seconds * 1e9);
+      while (NowNanos() < end) {
+        const std::string& key = scan_keys[rng() % scan_keys.size()];
+        const uint64_t t0 = NowNanos();
+        std::unique_ptr<ROCKSDB_NAMESPACE::Iterator> it(db->NewIterator(ro));
+        uint64_t got = 0;
+        uint64_t bytes = 0;
+        for (it->Seek(key); it->Valid() && got < args.scan_length; it->Next()) {
+          bytes += it->key().size() + it->value().size();
+          ++got;
+        }
+        if (!it->status().ok()) {
+          ++res.errors;
+        }
+        it.reset();
+        const uint64_t dt = NowNanos() - t0;
+        res.latency.Add(dt);
+        ++res.scans;
+        res.entries += got;
+        scans_done.fetch_add(1, std::memory_order_relaxed);
+        scan_ns_total.fetch_add(dt, std::memory_order_relaxed);
+        scan_entries_total.fetch_add(got, std::memory_order_relaxed);
+        (void)bytes;
+      }
+    }
+    scan_mode = 0;
+    scans_finished = true;
+  }
+
   // Times flushing everything still in memtables. With a write buffer large
   // enough to hold all KVs, this is the flush of exactly one memtable.
   double final_flush_ms = -1;
@@ -1232,6 +1341,15 @@ int main(int argc, char** argv) {
     printf("final flush       : %.1f ms (DB::Flush after the load)\n",
            final_flush_ms);
   }
+  for (int mode = 0; mode < 2 && args.scan_seconds > 0; ++mode) {
+    const ScanResult& r = scan_results[mode];
+    printf("%s : %s scans in %.1f s, %llu entries each at most; latency (us): "
+           "avg %.2f | p50 %.2f | p99 %.2f\n",
+           mode == 0 ? "prefix scan      " : "total-order scan ",
+           WithCommas(r.scans).c_str(), args.scan_seconds,
+           static_cast<unsigned long long>(args.scan_length), r.latency.AverageNanos() / 1e3,
+           r.latency.PercentileNanos(0.50) / 1e3, r.latency.PercentileNanos(0.99) / 1e3);
+  }
 
   // One line for scripts: key=value pairs, times in seconds or microseconds.
   const LatencyHistogram& put = consumer_stats.put_latency;
@@ -1240,7 +1358,7 @@ int main(int argc, char** argv) {
          "limit=%llu consumed=%llu total_s=%.3f load_s=%.3f "
          "ops_per_s=%.0f put_avg_us=%.2f put_p50_us=%.2f put_p99_us=%.2f "
          "put_p999_us=%.2f put_max_us=%.2f flushes=%llu flush_avg_ms=%.1f "
-         "stall_s=%.3f final_flush_ms=%.1f\n",
+         "stall_s=%.3f final_flush_ms=%.1f",
          args.memtable.c_str(), options.write_buffer_size, args.consumers,
          args.preload ? 1 : 0, args.batch,
          options.allow_concurrent_memtable_write ? 1 : 0, args.shuffle ? 1 : 0,
@@ -1251,6 +1369,18 @@ int main(int argc, char** argv) {
          put.PercentileNanos(0.99) / 1e3, put.PercentileNanos(0.999) / 1e3,
          put.MaxNanos() / 1e3, static_cast<unsigned long long>(flush_time.count),
          flush_time.average / 1e3, stall_us / 1e6, final_flush_ms);
+  for (int mode = 0; mode < 2 && args.scan_seconds > 0; ++mode) {
+    const ScanResult& r = scan_results[mode];
+    const char* name = mode == 0 ? "prefix" : "total";
+    printf(" scan_%s=%llu scan_%s_per_s=%.1f scan_%s_avg_us=%.2f scan_%s_p50_us=%.2f "
+           "scan_%s_p99_us=%.2f scan_%s_entries=%llu scan_%s_errors=%llu",
+           name, static_cast<unsigned long long>(r.scans), name,
+           r.scans / args.scan_seconds, name, r.latency.AverageNanos() / 1e3, name,
+           r.latency.PercentileNanos(0.50) / 1e3, name, r.latency.PercentileNanos(0.99) / 1e3,
+           name, static_cast<unsigned long long>(r.entries), name,
+           static_cast<unsigned long long>(r.errors));
+  }
+  printf("\n");
   fflush(stdout);
 
   metrics_server.Stop();

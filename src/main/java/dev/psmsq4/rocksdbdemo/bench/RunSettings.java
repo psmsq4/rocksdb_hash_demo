@@ -17,9 +17,15 @@ import java.util.Map;
  * @param consumers   writer threads
  * @param hashHeight  skiplist height in each HEAD/UPSTREAM bucket, one of
  *                    {@link #HASH_HEIGHTS}; SKIPLIST always uses 12
+ * @param concurrent  allow_concurrent_memtable_write for HEAD and SKIPLIST
+ *                    (RocksDB's default); UPSTREAM cannot, so it is always off
+ * @param scanSeconds seconds of prefix scans and then of total-order scans after
+ *                    the load; 0 for no scans
+ * @param scanLength  entries each scan reads
  */
 public record RunSettings(long kv, int memtableMb, String keyFormat, boolean preload, boolean wal,
-                          int consumers, int hashHeight) {
+                          int consumers, int hashHeight, boolean concurrent, int scanSeconds,
+                          int scanLength) {
 
     public static final long KV_STEP = 100_000;
     public static final long KV_MIN = 100_000;
@@ -28,6 +34,9 @@ public record RunSettings(long kv, int memtableMb, String keyFormat, boolean pre
     public static final int MEMTABLE_STEP_MB = 128;
     public static final int MEMTABLE_MAX_MB = 2048;
     public static final int CONSUMERS_MAX = 8;
+    public static final int SCAN_SECONDS_MAX = 30;
+    public static final int SCAN_LENGTH_STEP = 10;
+    public static final int SCAN_LENGTH_MAX = 1000;
     // 4 is the RocksDB default for HashSkipList buckets. It keeps searches
     // logarithmic only up to about 4^4 = 256 entries per bucket; with large
     // memtables buckets grow far past that. 12 matches the default SkipList.
@@ -56,6 +65,10 @@ public record RunSettings(long kv, int memtableMb, String keyFormat, boolean pre
             "preload", 640_000.0,
             "preloadWal", 380_000.0,
             "accountKeyFactor", 0.87,   // trade_종목|계좌|t_id is slower
+            // Preload with several writers: UPSTREAM (no concurrent memtable
+            // writes) becomes the slowest; 4 writers, 10M account keys, 512MB
+            // took 30 s in all (26.7 s of writes).
+            "multiWriterFactor", 0.6,
             "overheadSeconds", 1.0);    // start, open, final flush
 
     /** Returns null when valid, otherwise what is wrong, for the user. */
@@ -77,6 +90,14 @@ public record RunSettings(long kv, int memtableMb, String keyFormat, boolean pre
         if (!HASH_HEIGHTS.containsKey(hashHeight)) {
             return "bucket 높이는 4 또는 12입니다.";
         }
+        if (scanSeconds < 0 || scanSeconds > SCAN_SECONDS_MAX) {
+            return "scan 시간은 0부터 " + SCAN_SECONDS_MAX + "초까지입니다.";
+        }
+        if (scanLength < SCAN_LENGTH_STEP || scanLength > SCAN_LENGTH_MAX
+                || scanLength % SCAN_LENGTH_STEP != 0) {
+            return "scan 길이는 " + SCAN_LENGTH_STEP + "부터 " + SCAN_LENGTH_MAX + "까지 "
+                    + SCAN_LENGTH_STEP + " 단위입니다.";
+        }
         return null;
     }
 
@@ -94,6 +115,15 @@ public record RunSettings(long kv, int memtableMb, String keyFormat, boolean pre
         if (!wal) {
             args.add("--disable_wal");
         }
+        // Leaving it out keeps each memtable's default: on for HEAD and
+        // SKIPLIST, off for UPSTREAM (which would reject --concurrent=1).
+        if (!concurrent) {
+            args.add("--concurrent=0");
+        }
+        if (scanSeconds > 0) {
+            args.add("--scan_seconds=" + scanSeconds);
+            args.add("--scan_length=" + scanLength);
+        }
         return args;
     }
 
@@ -103,7 +133,11 @@ public record RunSettings(long kv, int memtableMb, String keyFormat, boolean pre
         if ("symb_acct_tid".equals(keyFormat)) {
             rate *= RATES.get("accountKeyFactor");
         }
-        return kv / rate + RATES.get("overheadSeconds");
+        if (preload && consumers > 1) {
+            rate *= RATES.get("multiWriterFactor");
+        }
+        // Prefix scans, then total-order scans, each for scanSeconds.
+        return kv / rate + RATES.get("overheadSeconds") + 2.0 * scanSeconds;
     }
 
     public static Map<String, Object> limits() {
@@ -115,6 +149,9 @@ public record RunSettings(long kv, int memtableMb, String keyFormat, boolean pre
         m.put("memtableStepMb", MEMTABLE_STEP_MB);
         m.put("memtableMaxMb", MEMTABLE_MAX_MB);
         m.put("consumersMax", CONSUMERS_MAX);
+        m.put("scanSecondsMax", SCAN_SECONDS_MAX);
+        m.put("scanLengthStep", SCAN_LENGTH_STEP);
+        m.put("scanLengthMax", SCAN_LENGTH_MAX);
         m.put("keyFormats", KEY_FORMATS);
         m.put("hashHeights", HASH_HEIGHTS);
         m.put("rates", RATES);

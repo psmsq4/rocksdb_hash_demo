@@ -53,9 +53,21 @@ const fmtMs = (v) => (isNum(v) ? nf1.format(v) + " ms" : "–");
 const fmtSec = (v) => (isNum(v) ? nf1.format(v) + "초" : "–");
 function fmtDelta(v, base) {
   if (!isNum(v) || !isNum(base) || base === 0) return "";
-  const d = (v / base - 1) * 100;
+  const ratio = v / base;
+  // Orders of magnitude read better as a ratio than as a percentage.
+  if (ratio >= 3) return `UPSTREAM의 ${nf0.format(ratio)}배`;
+  if (ratio > 0 && ratio <= 1 / 3) return `UPSTREAM의 1/${nf0.format(1 / ratio)}`;
+  const d = (ratio - 1) * 100;
   if (Math.abs(d) < 0.05) return "UPSTREAM과 같음";
   return `UPSTREAM 대비 ${d > 0 ? "+" : "−"}${nf1.format(Math.abs(d))}%`;
+}
+
+// Microseconds shown in the unit that fits.
+function fmtLatency(us) {
+  if (!isNum(us)) return "–";
+  if (us >= 1e6) return nf2.format(us / 1e6) + " s";
+  if (us >= 1e3) return nf1.format(us / 1e3) + " ms";
+  return nf1.format(us) + " µs";
 }
 
 function el(tag, attrs = {}, ...children) {
@@ -132,12 +144,23 @@ const STAT_ROWS = [
   { group: "쓰기" },
   { kind: "ticker", key: "rocksdb.number.keys.written", label: "쓴 key 수", fmt: fmtCount,
     desc: "Put으로 기록된 key 개수." },
+  { kind: "ticker", key: "rocksdb.write.self", label: "직접 처리한 쓰기", fmt: fmtCount,
+    desc: "쓰기 그룹의 리더가 되어 직접 처리한 쓰기 요청 수." },
+  { kind: "ticker", key: "rocksdb.write.other", label: "대신 처리된 쓰기", fmt: fmtCount,
+    desc: "다른 스레드(리더)가 그룹으로 묶어 대신 처리한 쓰기 요청 수. 소비자가 여럿이면 늘어납니다." },
   { kind: "ticker", key: "rocksdb.bytes.written", label: "쓴 바이트", fmt: fmtBytes,
     desc: "Put으로 넘긴 key와 value의 총량." },
   { kind: "hist", key: "rocksdb.db.write.micros", label: "쓰기 1회 소요 시간", fmt: fmtMicros,
     desc: "DB::Put 한 번이 끝날 때까지의 시간. 평균과 p99." },
   { kind: "ticker", key: "rocksdb.stall.micros", label: "쓰기 정지 시간", fmt: fmtMicros,
     desc: "flush나 컴팩션이 밀려 쓰기가 멈춘 누적 시간. 0이면 flush가 쓰기를 막지 않았습니다." },
+  { group: "읽기" },
+  { kind: "ticker", key: "rocksdb.number.db.seek", label: "Seek 호출", fmt: fmtCount, optional: true,
+    desc: "iterator의 Seek 수. scan마다 한 번입니다." },
+  { kind: "ticker", key: "rocksdb.number.db.next", label: "Next 호출", fmt: fmtCount, optional: true,
+    desc: "iterator가 다음 entry로 넘어간 수." },
+  { kind: "hist", key: "rocksdb.db.seek.micros", label: "Seek 1회 소요 시간", fmt: fmtMicros, optional: true,
+    desc: "Seek 한 번. UPSTREAM의 total-order iterator 복사는 Seek이 아니라 iterator를 만들 때 듭니다." },
   { group: "컴팩션과 파일" },
   { kind: "ticker", key: "rocksdb.compact.read.bytes", label: "컴팩션 읽기", fmt: fmtBytes,
     desc: "L0 파일을 합치며 읽은 양." },
@@ -184,6 +207,124 @@ const CHARTS = [
   { id: "rssMb", title: "메모리 사용량 (RSS)", unit: "MB", hint: "프로세스 상주 메모리",
     fmt: (v) => (isNum(v) ? nf0.format(v) + " MB" : "–") },
 ];
+
+const fmtOps = (v) => (isNum(v) ? fmtCompact(v) + " ops/s" : "–");
+const fmtUs = (v) => (isNum(v) ? nf2.format(v) + " µs" : "–");
+
+// Latest rate while running, the load average once done.
+function liveOps(t) {
+  const r = t && t.result && num(t.result.ops_per_s);
+  if (isNum(r)) return r;
+  const s = t ? [...t.samples].reverse().find((x) => isNum(x.ops)) : null;
+  return s ? s.ops : null;
+}
+
+// Put latency from op_trade_bench's own histogram at the end; while running,
+// RocksDB's cumulative db.write.micros p99.
+function putLatency(t, q) {
+  const r = t && t.result && num(t.result[`put_${q}_us`]);
+  if (isNum(r)) return r;
+  const s = lastSample(t);
+  return q === "p99" && s && isNum(s.writeP99) ? s.writeP99 : null;
+}
+
+const WRITE_CHARTS = [
+  { id: "ops", title: "쓰기 처리량", unit: "ops/s", hint: "1초 간격", fmt: fmtOps },
+  { id: "cpu", title: "CPU 사용률", unit: "%", hint: "프로세스 전체, 100% = 코어 1개. 프로세스마다 CPU 4개",
+    fmt: (v) => (isNum(v) ? nf0.format(v) + "%" : "–") },
+  { id: "writeP99", title: "Put 지연 p99", unit: "µs", hint: "RocksDB db.write.micros, 시작부터 누적",
+    fmt: fmtUs },
+  { id: "rssMb", title: "메모리 사용량 (RSS)", unit: "MB", hint: "preload한 KV 포함",
+    fmt: (v) => (isNum(v) ? nf0.format(v) + " MB" : "–") },
+];
+
+// Range scan results: from RESULT at the end, live from the scrapes.
+function scanResult(t, mode, field) {
+  const r = t && t.result && num(t.result[`scan_${mode}_${field}`]);
+  return isNum(r) ? r : null;
+}
+function scanLatency(t, mode) {
+  const r = scanResult(t, mode, "p50_us");
+  if (isNum(r)) return r;
+  const want = mode === "prefix" ? 1 : 2;
+  const xs = t ? t.samples.filter((x) => x.scanMode === want && isNum(x.scanAvgUs)) : [];
+  return xs.length ? xs[xs.length - 1].scanAvgUs : null;
+}
+function scanRate(t, mode) {
+  const r = scanResult(t, mode, "per_s");
+  if (isNum(r)) return r;
+  const want = mode === "prefix" ? 1 : 2;
+  const xs = t ? t.samples.filter((x) => x.scanMode === want && isNum(x.scanOps)) : [];
+  return xs.length ? xs[xs.length - 1].scanOps : null;
+}
+const fmtScans = (v) => (isNum(v) ? (v >= 100 ? fmtCompact(v) : nf1.format(v)) + " 회/s" : "–");
+
+// Load first (about 30% of the dial), then the two scan phases.
+function scanProgress(t) {
+  if (!t) return 0;
+  if (t.state === "DONE") return 1;
+  const s = lastSample(t);
+  if (!s) return 0;
+  const load = s.limit ? Math.min(1, s.consumed / s.limit) : 0;
+  const scan = isNum(s.scanProgress) ? s.scanProgress : 0;
+  return 0.3 * load + 0.7 * scan;
+}
+const PHASE_TEXT = { 1: "KV 준비 중", 2: "적재 중", 5: "prefix scan 중", 6: "total-order scan 중", 3: "flush 중" };
+
+const SCAN_CHARTS = [
+  { id: "scanOps", title: "scan 처리량", unit: "회/s", hint: "앞쪽은 prefix, 뒤쪽은 total-order", fmt: fmtScans },
+  { id: "scanAvgUs", title: "scan 평균 지연", unit: "µs", hint: "로그 눈금, 1초 구간 평균", log: true, fmt: fmtLatency },
+  { id: "rssMb", title: "메모리 사용량 (RSS)", unit: "MB", hint: "UPSTREAM은 total-order iterator마다 memtable을 복사",
+    fmt: (v) => (isNum(v) ? nf0.format(v) + " MB" : "–") },
+  { id: "cpu", title: "CPU 사용률", unit: "%", hint: "프로세스 전체, 100% = 코어 1개",
+    fmt: (v) => (isNum(v) ? nf0.format(v) + "%" : "–") },
+];
+
+// What each kind of card leads with: the tile's number, the comparison bars
+// and the charts.
+const VIEWS = {
+  flush: {
+    tile: {
+      value: avgFlushMs, show: (v) => nf1.format(v), unit: "ms 평균 flush", empty: "평균 flush",
+      sub: (t, secs) => `flush ${autoFlushes(t).length}회, ${fmtSec(secs)}`,
+    },
+    compare: [
+      { title: "평균 flush 시간", hint: "자동 flush", get: avgFlushMs, fmt: fmtMs },
+      { title: "마지막 flush 시간", hint: "적재 후 DB::Flush", get: finalFlushMs, fmt: fmtMs },
+      { title: "적재 소요 시간", hint: "첫 Put부터 마지막 Put까지", get: loadSeconds, fmt: fmtSec },
+      { title: "쓰기 처리량", hint: "적재 구간 평균", get: throughput, fmt: fmtOps },
+    ],
+    charts: CHARTS,
+  },
+  write: {
+    tile: {
+      value: liveOps, show: (v) => fmtCompact(v), unit: "ops/s", empty: "쓰기 처리량",
+      sub: (t) => `적재 ${fmtSec(loadSeconds(t))}, p99 ${fmtUs(putLatency(t, "p99"))}`,
+    },
+    compare: [
+      { title: "쓰기 처리량", hint: "적재 구간 평균", get: throughput, fmt: fmtOps },
+      { title: "적재 소요 시간", hint: "첫 Put부터 마지막 Put까지", get: loadSeconds, fmt: fmtSec },
+      { title: "Put 지연 p50", hint: "Put 한 번", get: (t) => putLatency(t, "p50"), fmt: fmtUs },
+      { title: "Put 지연 p99", hint: "Put 한 번", get: (t) => putLatency(t, "p99"), fmt: fmtUs },
+    ],
+    charts: WRITE_CHARTS,
+  },
+  scan: {
+    progress: scanProgress,
+    tile: {
+      value: (t) => scanLatency(t, "total"), show: (v) => fmtLatency(v),
+      unit: "total-order p50", empty: "total-order scan",
+      sub: (t) => `prefix scan p50 ${fmtLatency(scanLatency(t, "prefix"))}`,
+    },
+    compare: [
+      { title: "prefix scan 지연 p50", hint: "한 종목 안", get: (t) => scanLatency(t, "prefix"), fmt: fmtLatency },
+      { title: "prefix scan 처리량", hint: "초당 scan 수", get: (t) => scanRate(t, "prefix"), fmt: fmtScans },
+      { title: "total-order scan 지연 p50", hint: "종목을 넘어 key 순서대로", get: (t) => scanLatency(t, "total"), fmt: fmtLatency },
+      { title: "total-order scan 처리량", hint: "초당 scan 수", get: (t) => scanRate(t, "total"), fmt: fmtScans },
+    ],
+    charts: SCAN_CHARTS,
+  },
+};
 
 function seriesTable(run, chart) {
   return TARGETS.map((m) => {
@@ -256,6 +397,13 @@ function nearest(col, i, exact) {
   return null;
 }
 
+// Powers of ten within [min, max], for log-scale axes.
+function decades(u, axisIdx, min, max) {
+  const out = [];
+  for (let e = Math.ceil(Math.log10(Math.max(min, 1e-9))); 10 ** e <= max; e++) out.push(10 ** e);
+  return out;
+}
+
 function makeChart(host, chart, data, width) {
   const series = [{}];
   TARGETS.forEach((m) => {
@@ -278,11 +426,15 @@ function makeChart(host, chart, data, width) {
     cursor: { y: false, points: { size: 7 }, drag: { x: false, y: false } },
     scales: {
       x: { time: false, range: (u, lo, hi) => [0, Math.max(5, Math.ceil(hi || 0))] },
-      y: { range: (u, lo, hi) => [0, hi > 0 ? hi * 1.12 : 1] },
+      y: chart.log
+        ? { distr: 3, log: 10, range: (u, lo, hi) => [Math.max(0.1, (lo || 1) / 2), Math.max(1, (hi || 1) * 2)] }
+        : { range: (u, lo, hi) => [0, hi > 0 ? hi * 1.12 : 1] },
     },
     axes: [
       { ...axis, values: (u, vals) => vals.map((v) => `${v}s`) },
-      { ...axis, size: 56, values: (u, vals) => vals.map((v) => fmtCompact(v)) },
+      chart.log
+        ? { ...axis, size: 64, splits: decades, values: (u, vals) => vals.map((v) => fmtLatency(v)) }
+        : { ...axis, size: 56, values: (u, vals) => vals.map((v) => fmtCompact(v)) },
     ],
     series,
     plugins: [tooltipPlugin(chart)],
@@ -301,11 +453,13 @@ function specChips(s) {
     ["WAL", s.wal ? "켬" : "끔"],
     ["쓰기", `${s.preload ? "preload" : "큐"}, 소비자 ${s.consumers}개`],
     ["bucket 높이", String(s.hashHeight)],
+    ["동시 쓰기", s.concurrent ? "켬" : "끔"],
+    ...(s.scanSeconds > 0 ? [["scan", `${s.scanSeconds}초씩, ${fmtCount(s.scanLength)}개`]] : []),
   ];
 }
 
 function sameSettings(a, b) {
-  return !!a && !!b && ["kv", "memtableMb", "keyFormat", "preload", "wal", "consumers", "hashHeight"]
+  return !!a && !!b && ["kv", "memtableMb", "keyFormat", "preload", "wal", "consumers", "hashHeight", "concurrent", "scanSeconds", "scanLength"]
     .every((k) => a[k] === b[k]);
 }
 
@@ -313,7 +467,8 @@ function sameSettings(a, b) {
 function estimateSeconds(s, rates) {
   let rate = rates[(s.preload ? "preload" : "queue") + (s.wal ? "Wal" : "")];
   if (s.keyFormat === "symb_acct_tid") rate *= rates.accountKeyFactor;
-  return s.kv / rate + rates.overheadSeconds;
+  if (s.preload && s.consumers > 1) rate *= rates.multiWriterFactor;
+  return s.kv / rate + rates.overheadSeconds + 2 * (s.scanSeconds || 0);
 }
 
 // Rough bytes one preloaded KV takes in memory (two std::strings and heap).
@@ -352,6 +507,22 @@ const settingsDialog = {
         return Math.min(l.memtableMaxMb, r);
       },
     });
+    this.scanSeconds = this.stepper("scanSeconds", {
+      parse: (t) => Number(String(t).replace(/[^\d]/g, "")),
+      show: (v) => `${v}초`,
+      next: (v, dir) => v + dir,
+      fix: (v) => Math.min(this.info.limits.scanSecondsMax, Math.max(1, Math.round(v) || 1)),
+    });
+    this.scanLength = this.stepper("scanLength", {
+      parse: (t) => Number(String(t).replace(/[^\d]/g, "")),
+      show: (v) => fmtCount(v),
+      next: (v, dir) => v + dir * this.info.limits.scanLengthStep,
+      fix: (v) => {
+        const l = this.info.limits;
+        const r = Math.round(v / l.scanLengthStep) * l.scanLengthStep;
+        return Math.min(l.scanLengthMax, Math.max(l.scanLengthStep, r));
+      },
+    });
     this.consumers = this.stepper("consumers", {
       parse: (t) => Number(String(t).replace(/[^\d]/g, "")),
       show: (v) => String(v),
@@ -374,6 +545,12 @@ const settingsDialog = {
     d.querySelector('[data-action="save"]').addEventListener("click", () => this.save());
     d.addEventListener("click", (e) => { if (e.target === d) d.close(); });  // backdrop
     d.addEventListener("close", () => { if (this.card) this.card.$(".settings-btn").focus(); });
+  },
+
+  // Steppers the current card shows.
+  steppers() {
+    const all = [this.kv, this.mem, this.consumers];
+    return this.card && this.card.bench.kind === "scan" ? [...all, this.scanSeconds, this.scanLength] : all;
   },
 
   // A rounded −/value/+ control. Holding a button repeats, faster over time;
@@ -431,6 +608,9 @@ const settingsDialog = {
     }
     this.draft = { ...this.info.settings };
     this.dialog.querySelector(".modal-title").textContent = `${card.bench.title} 설정`;
+    this.dialog.querySelectorAll("[data-kinds]").forEach((f) => {
+      f.hidden = !f.dataset.kinds.split(" ").includes(card.bench.kind);
+    });
     this.buildSegments();
     this.render();
     this.dialog.showModal();
@@ -463,7 +643,7 @@ const settingsDialog = {
   render() {
     const s = this.draft;
     const l = this.info.limits;
-    for (const st of [this.kv, this.mem, this.consumers]) {
+    for (const st of this.steppers()) {
       if (document.activeElement !== st.input) st.input.value = st.ops.show(s[st.field]);
       st.dec.disabled = st.ops.fix(st.ops.next(s[st.field], -1)) === s[st.field];
       st.inc.disabled = st.ops.fix(st.ops.next(s[st.field], 1)) === s[st.field];
@@ -498,7 +678,7 @@ const settingsDialog = {
 
   async save() {
     // Commit a value still being typed.
-    for (const st of [this.kv, this.mem, this.consumers]) {
+    for (const st of this.steppers()) {
       if (document.activeElement === st.input) this.draft[st.field] = st.ops.fix(st.ops.parse(st.input.value));
     }
     const btn = this.dialog.querySelector('[data-action="save"]');
@@ -614,6 +794,22 @@ function workloadTraits(s, p) {
     ? `KV를 모두 메모리에 먼저 만든 뒤 소비자 ${s.consumers}개가 Put만 합니다. 파일 읽기는 시간에 들어가지 않습니다.`
     : `생산자 스레드가 파일을 읽어 큐에 넣고, 소비자 ${s.consumers}개가 꺼내 Put합니다.`;
   rows.push(["쓰기", `${how} WAL은 ${s.wal ? "켜서 Put마다 로그도 씁니다" : "꺼서 memtable에만 씁니다"}.`]);
+  if (s.scanSeconds > 0) {
+    rows.push(["scan", `적재가 끝나면 prefix scan(한 종목 안, prefix_same_as_start)을 ${s.scanSeconds}초, total-order scan(total_order_seek, 종목을 넘어 key 순서대로)을 ${s.scanSeconds}초 합니다. scan마다 iterator를 새로 열고 적재한 key 중 하나로 seek한 뒤 최대 ${fmtCount(s.scanLength)}개를 읽습니다.`]);
+    rows.push(["iterator", "UPSTREAM은 total-order iterator를 열 때마다 memtable 전체를 정렬된 skiplist로 복사합니다. HEAD는 정렬된 prefix 목록으로 복사 없이 순서대로 읽습니다."]);
+    if (p && p.available) {
+      const entry = p.avgKeyBytes[s.keyFormat] + p.avgValueBytes + MEMTABLE_OVERHEAD_BYTES;
+      const fits = s.kv * entry <= s.memtableMb * 1024 * 1024 * 0.95;
+      rows.push(["memtable", fits
+        ? `KV 약 ${fmtBytes(s.kv * entry)}가 memtable(${s.memtableMb}MB) 하나에 들어가 scan이 memtable만 읽습니다.`
+        : `KV 약 ${fmtBytes(s.kv * entry)}가 memtable(${s.memtableMb}MB)보다 커서 일부가 SST로 flush됩니다. scan은 SST도 함께 읽습니다.`]);
+    }
+  }
+  if (s.consumers > 1) {
+    rows.push(["동시 쓰기", s.concurrent
+      ? "HEAD와 SKIPLIST는 소비자들이 memtable에 동시에 넣습니다(allow_concurrent_memtable_write). UPSTREAM은 동시 쓰기를 지원하지 않아 RocksDB가 쓰기를 모아 한 스레드가 차례로 넣습니다."
+      : "꺼 두어서 세 memtable 모두 RocksDB가 쓰기를 모아 한 스레드가 차례로 넣습니다."]);
+  }
   return rows;
 }
 
@@ -621,6 +817,7 @@ function workloadTraits(s, p) {
 class Card {
   constructor(bench) {
     this.bench = bench;
+    this.view = VIEWS[bench.kind] || VIEWS.flush;
     this.run = null;
     this.expanded = false;
     this.charts = new Map();
@@ -647,7 +844,7 @@ class Card {
         el("span", { class: "target-name", text: m }),
         el("span", { class: "target-state", text: "대기" }));
       const value = el("div", { class: "target-value" },
-        el("strong", { text: "–" }), el("span", { text: "평균 flush" }));
+        el("strong", { text: "–" }), el("span", { text: this.view.tile.empty }));
       const sub = el("div", { class: "target-sub", text: "아직 측정하지 않았습니다" });
       const bar = el("div", { class: "target-bar" }, el("i"));
       tile.append(top, value, sub, bar);
@@ -669,12 +866,7 @@ class Card {
 
   buildDetail() {
     // Comparison bars
-    this.compare = [
-      { title: "평균 flush 시간", hint: "자동 flush", get: avgFlushMs, fmt: fmtMs },
-      { title: "마지막 flush 시간", hint: "적재 후 DB::Flush", get: finalFlushMs, fmt: fmtMs },
-      { title: "적재 소요 시간", hint: "첫 Put부터 마지막 Put까지", get: loadSeconds, fmt: fmtSec },
-      { title: "쓰기 처리량", hint: "적재 구간 평균", get: throughput, fmt: (v) => (isNum(v) ? fmtCompact(v) + " ops/s" : "–") },
-    ].map((c) => {
+    this.compare = this.view.compare.map((c) => {
       const panel = el("div", { class: "panel" });
       const bars = el("div", { class: "bars" });
       const rows = {};
@@ -699,7 +891,7 @@ class Card {
     });
 
     // Chart panels
-    this.chartPanels = CHARTS.map((c) => {
+    this.chartPanels = this.view.charts.map((c) => {
       const host = el("div", { class: "chart" });
       const empty = el("div", { class: "chart-empty", text: "측정을 시작하면 1초마다 그려집니다" });
       const legend = el("div", { class: "legend" });
@@ -803,7 +995,7 @@ class Card {
       const t = r && r.targets[arc.dataset.target];
       const c = 2 * Math.PI * Number(arc.getAttribute("r"));
       arc.style.strokeDasharray = `${c}`;
-      arc.style.strokeDashoffset = `${c * (1 - progressOf(t))}`;
+      arc.style.strokeDashoffset = `${c * (1 - (this.view.progress || progressOf)(t))}`;
     });
 
     // Tiles
@@ -811,16 +1003,18 @@ class Card {
       const tile = this.tiles[m];
       const t = r && r.targets[m];
       tile.dataset.state = t ? t.state : "IDLE";
-      const p = progressOf(t);
+      const p = (this.view.progress || progressOf)(t);
+      const phase = lastSample(t) ? lastSample(t).phase : 0;
+      const doing = this.view.progress && PHASE_TEXT[phase] ? PHASE_TEXT[phase] : "측정 중";
       tile.querySelector(".target-state").textContent = !t ? "대기"
-        : t.state === "RUNNING" ? `측정 중 ${nf0.format(p * 100)}%` : STATE_TEXT[t.state];
-      const avg = avgFlushMs(t);
-      tile.querySelector(".target-value strong").textContent = isNum(avg) ? nf1.format(avg) : "–";
-      tile.querySelector(".target-value span").textContent = isNum(avg) ? "ms 평균 flush" : "평균 flush";
-      const n = autoFlushes(t).length;
+        : t.state === "RUNNING" ? `${doing} ${nf0.format(p * 100)}%` : STATE_TEXT[t.state];
+      const tv = this.view.tile;
+      const v = t ? tv.value(t) : null;
+      tile.querySelector(".target-value strong").textContent = isNum(v) ? tv.show(v) : "–";
+      tile.querySelector(".target-value span").textContent = isNum(v) ? tv.unit : tv.empty;
       const secs = t ? (t.endedAt ?? (lastSample(t) ? lastSample(t).t : null)) : null;
       tile.querySelector(".target-sub").textContent = !t ? "아직 측정하지 않았습니다"
-        : t.error ? t.error : `flush ${n}회, ${fmtSec(secs)}`;
+        : t.error ? t.error : tv.sub(t, secs);
       tile.querySelector(".target-bar i").style.width = `${(t ? p : 0) * 100}%`;
     }
 
@@ -990,7 +1184,20 @@ class Card {
       ...TARGETS.map((m) => el("th", { "data-target": m, text: m })),
       el("th", { text: "HEAD ÷ UPSTREAM" }));
     const body = el("tbody");
-    for (const row of STAT_ROWS) {
+    // Rows marked optional show only when some memtable reported them; a
+    // group with no rows left is dropped.
+    const present = (row) => !row.optional || TARGETS.some((m) => {
+      const t = r.targets[m];
+      return t && (row.kind === "hist" ? t.histograms[row.key] : t.tickers[row.key] != null);
+    });
+    const rows = STAT_ROWS.filter((row, i) => {
+      if (!row.group) return present(row);
+      for (let j = i + 1; j < STAT_ROWS.length && !STAT_ROWS[j].group; j++) {
+        if (present(STAT_ROWS[j])) return true;
+      }
+      return false;
+    });
+    for (const row of rows) {
       if (row.group) {
         body.append(el("tr", { class: "stats-group" }, el("td", { colspan: "5", text: row.group })));
         continue;
