@@ -128,6 +128,36 @@ HEAD는 초당 약 140만 건으로 일정, upstream은 크기가 클수록 느�
   SkipList만 최대 2.57배 확장.
 - 큐 모드에서 소비자를 늘리면 큐 lock이 먼저 병목(4소비자 약 10만 ops/s). 확장성은 `--preload`로 잴 것.
 
+### 3.7 bucket 높이 (서버, 세 개 동시 실행, 1천만 건, 계좌 key, preload, WAL 끔, 2라운드)
+`experiments/scripts/run_height.sh` → `experiments/results/server/height.txt`
+
+| memtable | 높이 | HEAD | UPSTREAM | SKIPLIST(12) |
+|---|---|---|---|---|
+| 2048MB (flush 0회) | 4 | 35.5초 | 37.9초 | 29.7초 |
+| 2048MB (flush 0회) | 12 | **26.1초** | 30.6초 | 29.7초 |
+| 64MB (flush 30회) | 4 | 13.1초 | 12.0초 | 16.5초 |
+| 64MB (flush 30회) | 12 | 13.9초 | 11.7초 | 17.0초 |
+
+- 높이 4(RocksDB 기본)는 bucket당 약 256개(4^4)까지만 로그 탐색이다. 2048MB에서는 memtable 하나에 1천만 건이 들어가 bucket(종목)당 평균 약 2,900개, 최대 약 6,800개라 맨 위 레벨을 선형으로 훑는다. 그래서 hash 계열이 SKIPLIST보다 느렸다.
+- 높이 12로 맞추면 HEAD가 SKIPLIST보다 12% 빠르다(put p99 10.0 → 5.9µs). 64MB에서는 bucket당 약 100개라 높이와 무관하게 hash 계열이 빠르다.
+- 그래서 대시보드 기본 높이를 12로 바꿨다. 이전 측정(3.1~3.6절, 서버 재측정 포함)은 모두 높이 4다.
+
+### 3.8 InlineSkipList는 언제 이득인가 (서버, 단독 실행, perf stat, 2048MB, preload, WAL 끔, 높이 12, 2라운드)
+`experiments/scripts/run_fastpath.sh` → `experiments/results/server/fastpath.txt`
+
+| key | memtable | 적재 시간 | 명령어/KV | IPC | L1 미스/KV |
+|---|---|---|---|---|---|
+| 시간순 `trade_종목\|t_id` | HEAD | 6.33 / 6.43초 | 11,079 | 2.07 | 25.4 |
+| 시간순 | UPSTREAM | 6.24 / 6.38초 | 11,191 | 1.88 | 32.1 |
+| 계좌 `trade_종목\|계좌\|t_id` | HEAD | 23.6 / 24.3초 | 13,413 | 0.96 | 86.6 |
+| 계좌 | UPSTREAM | 27.2 / 28.9초 | 13,415 | 0.81 | 136.0 |
+
+- 같은 조건에서 SKIPLIST는 시간순 약 20초, 계좌 약 27.5초다. 시간순 key는 연속 key가 서로 다른 종목이라 전역 리스트에서는 fast-path를 못 탄다.
+- **시간순 key에서는 HEAD = UPSTREAM.** 새 KV가 거의 항상 bucket 끝에 붙어 두 skiplist 모두 순차 삽입 fast-path로 탐색을 건너뛴다(`SkipList`의 `prev_` 재사용, `skiplist.h` "fast path for sequential insertion" / `InlineSkipList`의 `seq_splice_`). 건드리는 노드는 방금 넣은 꼬리 노드라 캐시에 있으므로 key 인라인이 아낄 미스가 없다.
+- **계좌 key에서는 HEAD가 14% 빠르다.** 매 삽입이 bucket을 탐색하며 오래된 노드를 따라가는데, InlineSkipList는 key가 노드 안에 있어 노드당 미스가 한 번이다(L1 미스 −36%, IPC 0.81 → 0.96, 명령어 수는 같다).
+- 종목 안에서 t_id가 줄어드는 행이 3%(앞 200만 행 기준) 있지만 영향은 없다. 항상 증가하는 행 번호 key로 바꿔도 결과가 같았다.
+- 64MB에서는 시간순 key에서도 HEAD가 약 16% 빠르다(5.6 대 6.7초). 하지만 이건 flush 몫이다. 적재 중 flush 28회가 같은 코어를 쓰고, UPSTREAM은 flush가 느리고(평균 186 대 143 ms) stall이 0.34초 생긴다.
+
 ## 4. 정정된 가설 (발표 때 주의)
 
 | 이전 주장 | 실제 |
@@ -138,6 +168,9 @@ HEAD는 초당 약 140만 건으로 일정, upstream은 크기가 클수록 느�
 | 보고서 4차 동시성 실험의 lock 경합 해석 | fixed:7 + 7자리 미만 key(약 1/3)가 도메인 밖이라 footer까지 prefix로 읽음. 결과가 오염됐을 수 있음 |
 | (이번 작업 중) HEAD flush가 upstream보다 느리다 | 1회 측정의 편차. 반복 측정에서는 HEAD가 30% 빠름 |
 | (이번 작업 중) 메모 후에도 13% 느리다 | 3라운드 편차. 7라운드에서는 동등 |
+| (서버 작업 중) 큰 memtable에서 hash 계열이 SKIPLIST보다 느리다 | bucket 높이 4(RocksDB 기본) 때문. 12로 맞추면 HEAD가 12% 빠르다 (3.7절) |
+| (서버 작업 중) 시간순 key에서도 2048MB면 HEAD가 UPSTREAM보다 44% 빠르다 | 대시보드 측정과 같은 코어에서 겹친 오측정. 다시 재면 같다 (3.8절) |
+| (서버 작업 중) t_id 3% 역순 때문에 fast-path 복구 비용이 갈린다 | 항상 증가하는 key로 바꿔도 같아서 기각 |
 
 ## 5. 도구
 
@@ -164,6 +197,8 @@ op_trade_bench/out/op_trade_bench --memtable=HEAD|UPSTREAM|SKIPLIST [옵션]
 | `--queue=N`, `--progress_ms=N`, `--input=`, `--db=` | 큐 크기, 진행 출력 주기, 입력, DB 경로 |
 | `--metrics_port=N` | `127.0.0.1:N/metrics`에 Prometheus 지표 노출(0이면 빈 포트, `METRICS_PORT=<n>` 출력). flush 이벤트, memtable과 DB 속성, CPU와 RSS, 0이 아닌 RocksDB statistics |
 | `--metrics_dump=PATH` | 적재와 최종 flush 후 같은 지표를 파일로 남김(종료 후에도 최종값을 읽기 위함) |
+| `--print_samples=N` | 만든 KV 중 N개를 고른 간격으로 `SAMPLE <순번> <key>\t<value>` 줄로 출력(대시보드의 KV 샘플 패널용) |
+| `--hash_height=N` | HEAD, UPSTREAM bucket skiplist 높이(기본 4 = RocksDB 기본, SKIPLIST는 항상 12). 대시보드 기본은 12 |
 
 - prefix 추출기: 첫 `|`까지(구분자 포함). key 끝은 길이로 정해지므로 t_id 뒤에 구분자가 필요 없다.
 - UPSTREAM은 `e591f5f1a`의 `hash_skiplist_rep.cc`를 이름만 바꿔 내장(`upstream_hash_skiplist_rep.cc`, `gen_upstream.sh`로 재생성). 그래서 한 바이너리로 세 memtable을 비교한다.
@@ -173,13 +208,17 @@ op_trade_bench/out/op_trade_bench --memtable=HEAD|UPSTREAM|SKIPLIST [옵션]
 ### 5.2 웹 대시보드 (Spring Boot 3.5.9, Java 21, Gradle 8.10 wrapper)
 ```bash
 op_trade_bench/build.sh                                            # 측정기 먼저
-./gradlew build && ~/java21/bin/java -jar build/libs/rocksdb-demo-0.1.0.jar   # http://127.0.0.1:8080/#flush
+./gradlew build && ~/java21/bin/java -jar build/libs/rocksdb-demo-0.1.0.jar   # http://127.0.0.1:8181/#flush
 ```
 - 서버에는 JDK 21이 `~/java21`에만 있다. Gradle toolchain은 `~/.gradle/gradle.properties`의 `org.gradle.java.installations.paths`로 찾고, jar는 `~/java21/bin/java`로 실행한다.
 - 저장소 루트에서 실행할 것. 측정기 경로(`demo.bench-binary`)가 실행 위치 기준이다.
-- 카드 하나가 벤치마크 하나다(`bench/BenchmarkCatalog.java`). 시작 버튼을 누르면 HEAD, UPSTREAM, SKIPLIST를 동시에 띄우고 `demo.cpu-sets`(기본 2-5, 6-9, 10-13)로 코어를 나눈다. 백엔드(`bench/RunService.java`)가 각 프로세스의 `/metrics`를 1초마다 긁어 시계열로 쌓고, 페이지가 1초마다 `GET /api/benchmarks/{id}/run`으로 받아 그린다(uPlot, `static/vendor`). 측정은 한 번에 하나, `timeoutSeconds`를 넘으면 중단한다.
+- 카드 하나가 벤치마크 하나다(`bench/BenchmarkCatalog.java`). 시작 버튼을 누르면 HEAD, UPSTREAM, SKIPLIST를 동시에 띄우고 `demo.cpu-sets`(기본 2-5, 6-9, 10-13)로 코어를 나눈다. 백엔드(`bench/RunService.java`)가 각 프로세스의 `/metrics`를 1초마다 긁어 시계열로 쌓고, 페이지가 1초마다 `GET /api/benchmarks/{id}/run`으로 받아 그린다(uPlot, `static/vendor`). 측정은 한 번에 하나다.
 - 첫 카드는 flush: 1,000만 건, 64MB memtable, WAL 끔, 마지막에 `DB::Flush`. 세 개를 동시에 돌려 가장 느린 SKIPLIST가 약 22초.
-- localhost에만 바인딩된다. 다른 PC에서 보려면 `ssh -L 8080:127.0.0.1:8080 <서버>`.
+- 카드의 톱니 버튼이 설정 모달을 연다. KV 개수(100,000 단위, 최대 3,000만), memtable 크기(64MB 또는 128MB 단위, 최대 2GB), key 형식(하나만 선택), bucket 높이(4 또는 12, 기본 12), preload, WAL, 소비자 개수(1~8). 설정은 서버 메모리에 카드별로 저장되고(재시작하면 기본값) 다음 측정부터 적용된다. 검증과 인자 변환은 `bench/RunSettings.java`.
+- 측정을 시작하면 카드 오른쪽에 KV 샘플 패널이 열리고, 카드와 패널이 한 블록으로 가운데 정렬된다. 샘플은 측정기가 실제로 만든 KV 8개(`--print_samples=8`)이고, 워크로드 특성은 `bench/WorkloadProfile.java`가 Trade.txt 앞 200만 행에서 구한 값(종목 3,425개, 종목별 거래 수, key/value 평균 크기)으로 쓴다. 화면 폭 1100px 이하에서는 패널이 카드 아래로 내려간다.
+- 각 프로세스는 `perf stat`(카운팅만, `demo.perf-counters`)으로 감싸 실행하고, 측정이 끝나면 펼친 화면의 "하드웨어 카운터"에 KV당 사이클, 명령어, IPC, L1/dTLB/LLC 미스를 보여준다(`bench/PerfStat.java`). 하이브리드 CPU라 `cpu_core/<event>/u`를 쓰고 P코어에 고정해야 읽힌다. 시작할 때 P코어에서 한 번 시험해 안 되면 카운터 없이 측정만 한다. 중단 버튼은 perf의 자식(측정기)까지 끈다.
+- 모달의 예상 소요 시간은 세 개 동시 실행에서 잰 SKIPLIST 속도로 계산한다(큐 47만/s, 큐+WAL 30만/s, preload 64만/s, preload+WAL 38만/s, 계좌 key는 0.87배, 고정 1초). 제한 시간은 없다. 측정은 끝날 때까지 돌고, 멈추려면 측정 중인 다이얼을 누른다.
+- localhost에만 바인딩된다. 다른 PC에서 보려면 `ssh -L 8181:127.0.0.1:8181 <서버>`.
 - 글꼴은 Meslo LG S DZ for Powerline(`static/fonts`, powerline/fonts)이다.
 
 ### 5.3 실험 스크립트
@@ -209,6 +248,8 @@ git clang-format   # clang-format 23.1.5가 ~/.local/bin에 있음
 5. 큰 memtable이나 preload는 사용 가능 메모리를 먼저 본다. swap이 끼면 무효다.
 6. 쉘 스크립트는 bash로 돌린다(zsh는 `$VAR`에 담은 인자를 나누지 않음).
 7. 가설이 맞는지 **통제 실험으로 한 변수만 바꿔** 확인한다(높이 오귀속 사례).
+8. 웹 대시보드(8181)는 코어 2-13을 쓴다. 스크립트로 측정할 때는 대시보드가 측정 중이 아닌지 먼저 보고(`GET /api/benchmarks/flush/run`의 `active`), 끝난 뒤에도 겹치지 않았는지 확인한다. 한 번 겹쳐서 44% 차이로 오측정했다.
+9. HEAD/UPSTREAM과 SKIPLIST를 비교할 때는 bucket 높이(`--hash_height`)를 SKIPLIST와 같은 12로 맞췄는지 확인한다.
 
 ## 7. 남은 일 (우선순위 순)
 1. **회귀 테스트 묶음 재실행**: 9d92aecc1, 2561b92b7 이후 db_test, db_iterator_test, db_bloom_filter_test, db_tailing_iter_test, perf_context_test, options_test를 아직 돌리지 않았다(3커밋 시점에는 모두 통과).

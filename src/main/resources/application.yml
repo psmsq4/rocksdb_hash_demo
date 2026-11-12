@@ -1,6 +1,6 @@
 server:
   address: 127.0.0.1
-  port: 8080
+  port: 8181
 
 demo:
   # Built by op_trade_bench/build.sh against ~/rocksdb/rocksdb_hash/build-rel.
@@ -14,3 +14,8 @@ demo:
     upstream: 6-9
     skiplist: 10-13
   log-lines: 200
+  # Same default as op_trade_bench (TPCE_DIR defaults to ~/tpc-e).
+  trade-file: ${user.home}/tpc-e/flat_out/Trade.txt
+  # Wrap each run in `perf stat` (counting only) and show the hardware
+  # counters after it finishes. Turned off automatically when perf cannot run.
+  perf-counters: true

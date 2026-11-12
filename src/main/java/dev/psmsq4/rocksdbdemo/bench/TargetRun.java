@@ -34,7 +34,10 @@ public final class TargetRun {
     private Map<String, Double> tickers = Map.of();
     private Map<String, Map<String, Double>> histograms = Map.of();
     private Map<String, String> result = Map.of();
+    private Map<String, Double> perf = Map.of();
     private final Deque<String> log = new ArrayDeque<>();
+    // Key-values op_trade_bench printed as it produced them (--print_samples).
+    private final List<Map<String, Object>> kvSamples = new ArrayList<>();
 
     // For rates between scrapes.
     private double prevT = -1;
@@ -103,6 +106,19 @@ public final class TargetRun {
 
     /** One line of op_trade_bench output. */
     synchronized void output(String line) {
+        if (line.startsWith("SAMPLE ")) {
+            // SAMPLE <index> <key>\t<value>
+            int sp = line.indexOf(' ', 7);
+            int tab = line.indexOf('\t', sp + 1);
+            if (sp > 0 && tab > sp && kvSamples.size() < 64) {
+                Map<String, Object> s = new LinkedHashMap<>();
+                s.put("index", Long.parseLong(line.substring(7, sp)));
+                s.put("key", line.substring(sp + 1, tab));
+                s.put("value", line.substring(tab + 1));
+                kvSamples.add(s);
+            }
+            return;
+        }
         if (line.startsWith("METRICS_PORT=")) {
             try {
                 port = Integer.parseInt(line.substring("METRICS_PORT=".length()).strip());
@@ -190,6 +206,10 @@ public final class TargetRun {
         prevCpu = cpu;
     }
 
+    synchronized void perf(Map<String, Double> counters) {
+        perf = counters;
+    }
+
     synchronized Map<String, Object> snapshot() {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("memtable", memtable);
@@ -203,8 +223,13 @@ public final class TargetRun {
         m.put("tickers", tickers);
         m.put("histograms", histograms);
         m.put("result", result);
+        m.put("perf", perf);
         m.put("log", new ArrayList<>(log));
         return m;
+    }
+
+    synchronized List<Map<String, Object>> kvSamples() {
+        return new ArrayList<>(kvSamples);
     }
 
     private static double parseOr(String s, double fallback) {

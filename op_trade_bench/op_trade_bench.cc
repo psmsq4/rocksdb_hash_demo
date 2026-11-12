@@ -8,6 +8,7 @@
 //                  [--consumers=N] [--preload] [--batch=N] [--concurrent=0|1]
 //                  [--shuffle] [--key_format=symb_tid|symb_acct_tid]
 //                  [--progress_ms=N] [--metrics_port=N] [--metrics_dump=PATH]
+//                  [--print_samples=N]
 //
 // --metrics_port serves Prometheus text metrics at http://127.0.0.1:N/metrics
 // while the program runs (0 picks a free port; the port is printed as
@@ -298,9 +299,29 @@ bool SplitTrade(std::string_view line, std::string_view* fields) {
 // Keys are "trade_<t_s_symb>|<t_id>", in time order within a symbol, or with
 // with_account "trade_<t_s_symb>|<t_ca_id>|<t_id>", grouped by account within
 // a symbol, so trades of a symbol do not arrive in key order.
+// Prints `count` of the produced key-values, spread evenly over `limit`, as
+// "SAMPLE <index> <key>\t<value>" lines, so a viewer can show what is being
+// written. Off when count is 0.
+struct KvSampler {
+  uint64_t count = 0;
+  uint64_t stride = 1;
+
+  KvSampler(uint64_t n, uint64_t limit)
+      : count(n), stride(n == 0 ? 1 : std::max<uint64_t>(1, limit / n)) {}
+
+  void Maybe(uint64_t index, const std::string& key, const std::string& value) const {
+    if (count == 0 || index % stride != 0 || index / stride >= count) {
+      return;
+    }
+    printf("SAMPLE %llu %s\t%s\n", static_cast<unsigned long long>(index), key.c_str(),
+           value.c_str());
+    fflush(stdout);
+  }
+};
+
 template <class Sink>
 ProducerStats ReadTrades(const std::string& path, uint64_t limit,
-                         bool with_account, Sink&& sink) {
+                         bool with_account, const KvSampler& sampler, Sink&& sink) {
   ProducerStats stats;
   char* line = nullptr;
   size_t line_cap = 0;
@@ -350,6 +371,7 @@ ProducerStats ReadTrades(const std::string& path, uint64_t limit,
         }
         kv.value.append(fields[i]);
       }
+      sampler.Maybe(stats.produced, kv.key, kv.value);
       sink(std::move(kv));
       ++stats.produced;
     }
@@ -366,8 +388,9 @@ ProducerStats ReadTrades(const std::string& path, uint64_t limit,
 // Producer: pushes `limit` trades into `queue`, then closes it.
 ProducerStats produce_trade_transaction(const std::string& path,
                                         uint64_t limit, bool with_account,
+                                        const KvSampler& sampler,
                                         BoundedQueue<TradeKV>& queue) {
-  ProducerStats stats = ReadTrades(path, limit, with_account, [&](TradeKV&& kv) {
+  ProducerStats stats = ReadTrades(path, limit, with_account, sampler, [&](TradeKV&& kv) {
     kv.enqueued_ns = NowNanos();
     queue.Push(std::move(kv));
   });
@@ -692,6 +715,8 @@ struct Args {
   bool with_account = false;  // --key_format=symb_acct_tid
   int metrics_port = -1;      // -1: no metrics server
   std::string metrics_dump;
+  uint64_t print_samples = 0;
+  int hash_height = 4;  // bucket skiplist height of HEAD and UPSTREAM
 };
 
 // Parses a byte count with an optional K, M or G suffix (powers of 1024),
@@ -729,6 +754,10 @@ void Usage(const char* prog) {
           "  --metrics_port=N  serve Prometheus metrics on 127.0.0.1:N "
           "(0: any free port)\n"
           "  --metrics_dump=PATH  write the final metrics to PATH\n"
+          "  --hash_height=N  skiplist height in each HEAD/UPSTREAM bucket "
+          "(default 4, the RocksDB default; SKIPLIST uses 12)\n"
+          "  --print_samples=N  print N produced key-values, evenly spaced, as "
+          "SAMPLE lines\n"
           "  --consumers=N  writer threads (default 1)\n"
           "  --batch=N      key-values per WriteBatch (needs --preload)\n"
           "  --concurrent=0|1  set allow_concurrent_memtable_write\n"
@@ -807,6 +836,14 @@ bool ParseArgs(int argc, char** argv, Args* args) {
       }
     } else if (value_of("--metrics_dump", &v)) {
       args->metrics_dump = v;
+    } else if (value_of("--hash_height", &v)) {
+      args->hash_height = atoi(v.c_str());
+      if (args->hash_height < 1 || args->hash_height > 32) {
+        fprintf(stderr, "--hash_height must be 1..32\n");
+        return false;
+      }
+    } else if (value_of("--print_samples", &v)) {
+      args->print_samples = strtoull(v.c_str(), nullptr, 10);
     } else if (arg == "--disable_wal") {
       args->disable_wal = true;
     } else if (arg == "--flush_at_end") {
@@ -863,11 +900,12 @@ int main(int argc, char** argv) {
     options.write_buffer_size = args.write_buffer_size;
   }
   if (args.memtable == "HEAD") {
-    options.memtable_factory.reset(ROCKSDB_NAMESPACE::NewHashSkipListRepFactory());
-  } else if (args.memtable == "UPSTREAM") {
-    // Same defaults as NewHashSkipListRepFactory().
     options.memtable_factory.reset(
-        ROCKSDB_NAMESPACE::NewUpstreamHashSkipListRepFactory(1000000, 4, 4));
+        ROCKSDB_NAMESPACE::NewHashSkipListRepFactory(1000000, args.hash_height, 4));
+  } else if (args.memtable == "UPSTREAM") {
+    // Same bucket count, height and branching as HEAD.
+    options.memtable_factory.reset(
+        ROCKSDB_NAMESPACE::NewUpstreamHashSkipListRepFactory(1000000, args.hash_height, 4));
   }
   // DB::Open rejects concurrent memtable writes for reps that do not support
   // them: upstream HashSkipListRep, and HEAD when it runs against a library
@@ -897,6 +935,9 @@ int main(int argc, char** argv) {
   }
 
   printf("== op_trade_bench ==\n");
+  if (args.memtable != "SKIPLIST") {
+    printf("bucket height     : %d (branching 4)\n", args.hash_height);
+  }
   printf("memtable          : %s (%s)\n", args.memtable.c_str(),
          options.memtable_factory->Name());
   printf("write_buffer_size : %s bytes\n", WithCommas(options.write_buffer_size).c_str());
@@ -1031,13 +1072,15 @@ int main(int argc, char** argv) {
     fflush(stdout);
   }
 
+  const KvSampler sampler(args.print_samples, args.limit);
+
   // With --preload the KVs are built before the timed load.
   std::vector<TradeKV> preloaded;
   if (args.preload) {
     phase = 1;
     const uint64_t preload_start = NowNanos();
     preloaded.reserve(args.limit);
-    producer_stats = ReadTrades(args.input, args.limit, args.with_account,
+    producer_stats = ReadTrades(args.input, args.limit, args.with_account, sampler,
                                 [&](TradeKV&& kv) {
       preloaded.push_back(std::move(kv));
     });
@@ -1071,7 +1114,7 @@ int main(int argc, char** argv) {
   if (!args.preload) {
     producer = std::thread([&] {
       producer_stats = produce_trade_transaction(args.input, args.limit,
-                                                 args.with_account, queue);
+                                                 args.with_account, sampler, queue);
     });
   }
 

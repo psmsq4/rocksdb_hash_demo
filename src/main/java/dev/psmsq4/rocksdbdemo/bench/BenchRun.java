@@ -10,13 +10,18 @@ public final class BenchRun {
 
     private final long id;
     private final Benchmark benchmark;
+    private final RunSettings settings;
+    private final String perfNote;
     private final Instant startedAt = Instant.now();
     private final long startNanos = System.nanoTime();
     private final Map<String, TargetRun> targets = new LinkedHashMap<>();
 
-    BenchRun(long id, Benchmark benchmark, List<TargetRun> targetRuns) {
+    BenchRun(long id, Benchmark benchmark, RunSettings settings, List<TargetRun> targetRuns,
+             String perfNote) {
         this.id = id;
         this.benchmark = benchmark;
+        this.settings = settings;
+        this.perfNote = perfNote;
         for (TargetRun t : targetRuns) {
             targets.put(t.memtable(), t);
         }
@@ -28,6 +33,10 @@ public final class BenchRun {
 
     public Benchmark benchmark() {
         return benchmark;
+    }
+
+    public RunSettings settings() {
+        return settings;
     }
 
     public Map<String, TargetRun> targets() {
@@ -50,6 +59,13 @@ public final class BenchRun {
         m.put("startedAt", startedAt.toString());
         m.put("active", isActive());
         m.put("elapsed", Math.round(elapsed() * 1000) / 1000.0);
+        m.put("settings", settings);
+        m.put("perfNote", perfNote);
+        // Every memtable writes the same KVs; show the most complete list.
+        m.put("kvSamples", targets.values().stream()
+                .map(TargetRun::kvSamples)
+                .max(java.util.Comparator.comparingInt(List::size))
+                .orElse(List.of()));
         Map<String, Object> t = new LinkedHashMap<>();
         targets.forEach((k, v) -> t.put(k, v.snapshot()));
         m.put("targets", t);

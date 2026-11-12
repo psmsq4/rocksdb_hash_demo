@@ -25,6 +25,7 @@
   </main>
 
   <template id="card-template">
+    <div class="card-row">
     <article class="card">
       <div class="card-head">
         <button class="dial" type="button" aria-label="측정 시작">
@@ -47,7 +48,13 @@
           <div class="card-title-row">
             <h2 class="card-title"></h2>
             <ul class="specs"></ul>
-            <button class="expand" type="button" aria-expanded="false" aria-label="자세히 보기">
+            <button class="icon-btn settings-btn" type="button" aria-label="측정 설정" title="측정 설정">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"></path>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+              </svg>
+            </button>
+            <button class="icon-btn expand" type="button" aria-expanded="false" aria-label="자세히 보기">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg>
             </button>
           </div>
@@ -57,9 +64,11 @@
       <div class="card-detail" hidden>
         <div class="detail-inner">
           <p class="summary"></p>
+          <p class="run-note" hidden></p>
           <p class="notice" hidden></p>
           <section class="compare" aria-label="결과 비교"></section>
           <section class="charts" aria-label="실시간 지표"></section>
+          <section class="hw" aria-label="하드웨어 카운터"></section>
           <section class="stats" aria-label="RocksDB statistics"></section>
           <details class="logs">
             <summary>실행 로그</summary>
@@ -68,7 +77,117 @@
         </div>
       </div>
     </article>
+    <aside class="kv-panel" aria-label="KV 샘플과 워크로드 특성" aria-hidden="true">
+      <div class="kv-inner">
+        <div class="kv-head">
+          <h3 class="panel-title">KV 샘플</h3>
+          <span class="panel-hint kv-hint"></span>
+        </div>
+        <ol class="kv-list"></ol>
+        <div class="kv-head kv-head-traits">
+          <h3 class="panel-title">워크로드 특성</h3>
+          <span class="panel-hint kv-traits-hint"></span>
+        </div>
+        <dl class="kv-traits"></dl>
+      </div>
+    </aside>
+    </div>
   </template>
+
+  <dialog id="settings" class="modal" aria-labelledby="settings-title">
+    <form method="dialog" class="modal-form">
+      <header class="modal-head">
+        <h2 id="settings-title" class="modal-title">측정 설정</h2>
+        <button class="icon-btn modal-close" type="button" value="cancel" aria-label="닫기">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg>
+        </button>
+      </header>
+
+      <div class="modal-body">
+        <div class="field">
+          <div class="field-label">
+            <label for="set-kv">KV 개수</label>
+            <span class="field-hint">100,000개 단위</span>
+          </div>
+          <div class="stepper" data-field="kv">
+            <button type="button" class="step" data-dir="-1" aria-label="KV 개수 줄이기">−</button>
+            <input id="set-kv" class="step-value" inputmode="numeric" autocomplete="off">
+            <button type="button" class="step" data-dir="1" aria-label="KV 개수 늘리기">+</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="field-label">
+            <label for="set-mem">memtable 크기</label>
+            <span class="field-hint">128MB 단위 (최소 64MB, RocksDB 기본값)</span>
+          </div>
+          <div class="stepper" data-field="memtableMb">
+            <button type="button" class="step" data-dir="-1" aria-label="memtable 줄이기">−</button>
+            <input id="set-mem" class="step-value" inputmode="numeric" autocomplete="off">
+            <button type="button" class="step" data-dir="1" aria-label="memtable 늘리기">+</button>
+          </div>
+        </div>
+
+        <div class="field field-wide">
+          <div class="field-label">
+            <span id="set-key-label">key 형식</span>
+            <span class="field-hint">prefix는 첫 | 까지</span>
+          </div>
+          <div class="segmented" role="radiogroup" aria-labelledby="set-key-label"
+               data-field="keyFormat" data-options="keyFormats"></div>
+        </div>
+
+        <div class="field field-wide">
+          <div class="field-label">
+            <span id="set-height-label">bucket 높이</span>
+            <span class="field-hint">HEAD, UPSTREAM의 bucket마다 있는 skiplist의 최대 높이</span>
+          </div>
+          <div class="segmented" role="radiogroup" aria-labelledby="set-height-label"
+               data-field="hashHeight" data-options="hashHeights" data-number></div>
+        </div>
+
+        <div class="field">
+          <div class="field-label">
+            <span id="set-preload-label">preload</span>
+            <span class="field-hint">KV를 먼저 메모리에 모두 만들고 쓰기만 잽니다</span>
+          </div>
+          <button type="button" class="switch" role="switch" aria-checked="false"
+                  aria-labelledby="set-preload-label" data-field="preload"><i></i><span></span></button>
+        </div>
+
+        <div class="field">
+          <div class="field-label">
+            <span id="set-wal-label">WAL</span>
+            <span class="field-hint">write-ahead log 기록</span>
+          </div>
+          <button type="button" class="switch" role="switch" aria-checked="false"
+                  aria-labelledby="set-wal-label" data-field="wal"><i></i><span></span></button>
+        </div>
+
+        <div class="field">
+          <div class="field-label">
+            <label for="set-consumers">소비자 개수</label>
+            <span class="field-hint">Put을 하는 쓰기 스레드</span>
+          </div>
+          <div class="stepper stepper-sm" data-field="consumers">
+            <button type="button" class="step" data-dir="-1" aria-label="소비자 줄이기">−</button>
+            <input id="set-consumers" class="step-value" inputmode="numeric" autocomplete="off">
+            <button type="button" class="step" data-dir="1" aria-label="소비자 늘리기">+</button>
+          </div>
+        </div>
+
+        <p class="estimate"></p>
+        <p class="modal-error" role="alert" hidden></p>
+      </div>
+
+      <footer class="modal-foot">
+        <button type="button" class="btn btn-ghost" data-action="reset">기본값으로</button>
+        <span class="modal-foot-gap"></span>
+        <button type="button" class="btn btn-ghost" data-action="cancel">취소</button>
+        <button type="button" class="btn btn-primary" data-action="save">저장</button>
+      </footer>
+    </form>
+  </dialog>
 
   <script src="vendor/uPlot.iife.min.js"></script>
   <script src="app.js"></script>

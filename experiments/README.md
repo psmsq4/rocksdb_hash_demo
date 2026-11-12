@@ -45,6 +45,8 @@ UPSTREAM은 `op_trade_bench`에 내장(`upstream_hash_skiplist_rep.cc`)되어 �
 | run_keyfmt.sh | keyfmt.txt | key에 계좌를 넣으면? (섞지 않음) | HEAD 켬이 8스레드에서 UPSTREAM의 1.9배 |
 | run_single_thread.sh | st.txt | 기본 64MB, 단일 스레드, 두 key 형식 | 쓰기 HEAD = UPSTREAM, flush 22~24% 빠름 |
 | run_bigflush.sh | bigflush.txt | 512MB/1GB memtable flush | HEAD -21% / -50% |
+| run_height.sh | server/height.txt | bucket 높이 4 vs 12 (2048MB/64MB, 계좌 key, 동시 실행) | 2048MB에서 높이 4면 hash가 SKIPLIST보다 느림, 12면 HEAD가 12% 빠름 |
+| run_fastpath.sh | server/fastpath.txt | 시간순 vs 계좌 key에서 HEAD와 UPSTREAM (2048MB, 높이 12, 단독, perf) | 시간순은 fast-path로 같음, 계좌는 HEAD 14% 빠름(L1 미스 −36%) |
 
 각 `summarize_*.py`에 결과 파일을 넘기면 표가 나옵니다.
 

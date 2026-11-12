@@ -289,6 +289,334 @@ function makeChart(host, chart, data, width) {
   }, data, host);
 }
 
+// ---------- settings ----------
+const KEY_LABEL = { symb_tid: "trade_종목|t_id", symb_acct_tid: "trade_종목|계좌|t_id" };
+
+function specChips(s) {
+  if (!s) return [];
+  return [
+    ["KV", fmtCount(s.kv)],
+    ["memtable", `${s.memtableMb}MB`],
+    ["key", KEY_LABEL[s.keyFormat] || s.keyFormat],
+    ["WAL", s.wal ? "켬" : "끔"],
+    ["쓰기", `${s.preload ? "preload" : "큐"}, 소비자 ${s.consumers}개`],
+    ["bucket 높이", String(s.hashHeight)],
+  ];
+}
+
+function sameSettings(a, b) {
+  return !!a && !!b && ["kv", "memtableMb", "keyFormat", "preload", "wal", "consumers", "hashHeight"]
+    .every((k) => a[k] === b[k]);
+}
+
+// Same formula as RunSettings.estimateSeconds on the server.
+function estimateSeconds(s, rates) {
+  let rate = rates[(s.preload ? "preload" : "queue") + (s.wal ? "Wal" : "")];
+  if (s.keyFormat === "symb_acct_tid") rate *= rates.accountKeyFactor;
+  return s.kv / rate + rates.overheadSeconds;
+}
+
+// Rough bytes one preloaded KV takes in memory (two std::strings and heap).
+const PRELOAD_BYTES_PER_KV = 250;
+
+const settingsDialog = {
+  dialog: null,
+  card: null,
+  draft: null,
+  info: null,
+
+  init() {
+    const d = (this.dialog = document.getElementById("settings"));
+    this.kv = this.stepper("kv", {
+      parse: (t) => Number(String(t).replace(/[^\d]/g, "")),
+      show: (v) => fmtCount(v),
+      next: (v, dir) => v + dir * this.info.limits.kvStep,
+      fix: (v) => {
+        const l = this.info.limits;
+        const r = Math.round(v / l.kvStep) * l.kvStep;
+        return Math.min(l.kvMax, Math.max(l.kvMin, r));
+      },
+    });
+    this.mem = this.stepper("memtableMb", {
+      parse: (t) => Number(String(t).replace(/[^\d]/g, "")),
+      show: (v) => `${v} MB`,
+      next: (v, dir) => {
+        const l = this.info.limits;
+        if (dir > 0) return v < l.memtableStepMb ? l.memtableStepMb : v + l.memtableStepMb;
+        return v <= l.memtableStepMb ? l.memtableMinMb : v - l.memtableStepMb;
+      },
+      fix: (v) => {
+        const l = this.info.limits;
+        if (v < (l.memtableMinMb + l.memtableStepMb) / 2) return l.memtableMinMb;
+        const r = Math.max(l.memtableStepMb, Math.round(v / l.memtableStepMb) * l.memtableStepMb);
+        return Math.min(l.memtableMaxMb, r);
+      },
+    });
+    this.consumers = this.stepper("consumers", {
+      parse: (t) => Number(String(t).replace(/[^\d]/g, "")),
+      show: (v) => String(v),
+      next: (v, dir) => v + dir,
+      fix: (v) => Math.min(this.info.limits.consumersMax, Math.max(1, Math.round(v) || 1)),
+    });
+
+    d.querySelectorAll(".switch").forEach((sw) => {
+      sw.addEventListener("click", () => {
+        this.draft[sw.dataset.field] = !this.draft[sw.dataset.field];
+        this.render();
+      });
+    });
+    d.querySelector(".modal-close").addEventListener("click", () => d.close());
+    d.querySelector('[data-action="cancel"]').addEventListener("click", () => d.close());
+    d.querySelector('[data-action="reset"]').addEventListener("click", () => {
+      this.draft = { ...this.info.defaults };
+      this.render();
+    });
+    d.querySelector('[data-action="save"]').addEventListener("click", () => this.save());
+    d.addEventListener("click", (e) => { if (e.target === d) d.close(); });  // backdrop
+    d.addEventListener("close", () => { if (this.card) this.card.$(".settings-btn").focus(); });
+  },
+
+  // A rounded −/value/+ control. Holding a button repeats, faster over time;
+  // the value can also be typed and is snapped to the step on blur or Enter.
+  stepper(field, ops) {
+    const root = this.dialog.querySelector(`.stepper[data-field="${field}"]`);
+    const input = root.querySelector(".step-value");
+    const [dec, inc] = root.querySelectorAll(".step");
+    const set = (v) => {
+      this.draft[field] = ops.fix(v);
+      this.render();
+    };
+    let timer = null;
+    const stop = () => { clearTimeout(timer); timer = null; };
+    const press = (dir) => {
+      let delay = 380;
+      const tick = () => {
+        const before = this.draft[field];
+        set(ops.next(before, dir));
+        if (this.draft[field] === before) return stop();
+        delay = Math.max(30, delay * 0.82);
+        timer = setTimeout(tick, delay);
+      };
+      tick();
+    };
+    [[dec, -1], [inc, 1]].forEach(([btn, dir]) => {
+      btn.addEventListener("pointerdown", (e) => { e.preventDefault(); btn.focus(); press(dir); });
+      ["pointerup", "pointerleave", "pointercancel"].forEach((ev) => btn.addEventListener(ev, stop));
+      btn.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); set(ops.next(this.draft[field], dir)); }
+      });
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+        e.preventDefault();
+        set(ops.next(this.draft[field], e.key === "ArrowUp" ? 1 : -1));
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        set(ops.parse(input.value));
+      }
+    });
+    input.addEventListener("blur", () => set(ops.parse(input.value)));
+    return { input, dec, inc, ops, field };
+  },
+
+  async open(card) {
+    this.card = card;
+    this.error(null);
+    try {
+      const res = await fetch(`/api/benchmarks/${card.bench.id}/settings`);
+      this.info = await res.json();
+    } catch (e) {
+      card.showNotice("설정을 불러오지 못했습니다. 서버가 실행 중인지 확인하세요.");
+      return;
+    }
+    this.draft = { ...this.info.settings };
+    this.dialog.querySelector(".modal-title").textContent = `${card.bench.title} 설정`;
+    this.buildSegments();
+    this.render();
+    this.dialog.showModal();
+  },
+
+  // Rounded single-choice buttons: picking one releases the others.
+  buildSegments() {
+    this.dialog.querySelectorAll(".segmented").forEach((group) => {
+      const field = group.dataset.field;
+      const asNumber = group.hasAttribute("data-number");
+      const opts = Object.entries(this.info.limits[group.dataset.options])
+        .map(([v, label]) => [asNumber ? Number(v) : v, label]);
+      const pick = (value) => { this.draft[field] = value; this.render(); };
+      group.replaceChildren(...opts.map(([value, label]) => {
+        const b = el("button", { type: "button", class: "seg", role: "radio", "data-value": String(value), text: label });
+        b.addEventListener("click", () => pick(value));
+        b.addEventListener("keydown", (e) => {
+          if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+          e.preventDefault();
+          const i = opts.findIndex(([v]) => v === this.draft[field]);
+          const j = (i + (e.key === "ArrowRight" ? 1 : -1) + opts.length) % opts.length;
+          pick(opts[j][0]);
+          group.querySelector(`[data-value="${opts[j][0]}"]`).focus();
+        });
+        return b;
+      }));
+    });
+  },
+
+  render() {
+    const s = this.draft;
+    const l = this.info.limits;
+    for (const st of [this.kv, this.mem, this.consumers]) {
+      if (document.activeElement !== st.input) st.input.value = st.ops.show(s[st.field]);
+      st.dec.disabled = st.ops.fix(st.ops.next(s[st.field], -1)) === s[st.field];
+      st.inc.disabled = st.ops.fix(st.ops.next(s[st.field], 1)) === s[st.field];
+    }
+    this.dialog.querySelectorAll(".seg").forEach((b) => {
+      const on = b.dataset.value === String(s[b.closest(".segmented").dataset.field]);
+      b.setAttribute("aria-checked", String(on));
+      b.tabIndex = on ? 0 : -1;
+    });
+    this.dialog.querySelectorAll(".switch").forEach((sw) => {
+      const on = !!s[sw.dataset.field];
+      sw.setAttribute("aria-checked", String(on));
+      sw.querySelector("span").textContent = on ? "켬" : "끔";
+    });
+
+    const est = estimateSeconds(s, l.rates);
+    const parts = [`예상 소요 <b>약 ${nf0.format(Math.ceil(est))}초</b> (가장 느린 SKIPLIST 기준)`];
+    if (s.preload) {
+      const gb = (s.kv * PRELOAD_BYTES_PER_KV * 3) / 1024 ** 3;
+      parts.push(`preload는 세 프로세스가 KV를 모두 메모리에 올립니다. 약 ${nf1.format(gb)} GB`);
+    }
+    if (this.card && this.card.run && this.card.run.active) parts.push("지금 측정 중입니다. 저장한 설정은 다음 측정부터 적용됩니다.");
+    this.dialog.querySelector(".estimate").innerHTML = parts.join("<br>");
+    this.dialog.querySelector('[data-action="reset"]').disabled = sameSettings(s, this.info.defaults);
+  },
+
+  error(text) {
+    const n = this.dialog.querySelector(".modal-error");
+    n.hidden = !text;
+    n.textContent = text || "";
+  },
+
+  async save() {
+    // Commit a value still being typed.
+    for (const st of [this.kv, this.mem, this.consumers]) {
+      if (document.activeElement === st.input) this.draft[st.field] = st.ops.fix(st.ops.parse(st.input.value));
+    }
+    const btn = this.dialog.querySelector('[data-action="save"]');
+    btn.disabled = true;
+    try {
+      const res = await fetch(`/api/benchmarks/${this.card.bench.id}/settings`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(this.draft),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        this.error(body.error || `저장하지 못했습니다 (HTTP ${res.status}).`);
+        return;
+      }
+      this.card.setSettings(body.settings);
+      this.card.render();
+      this.dialog.close();
+    } catch (e) {
+      this.error("저장하지 못했습니다. 서버 연결을 확인하세요.");
+    } finally {
+      btn.disabled = false;
+    }
+  },
+};
+
+// ---------- hardware counters (perf stat, after the run) ----------
+const HW_METRICS = [
+  { key: "cycles", title: "사이클/KV", desc: "KV 하나에 든 CPU 사이클. 작을수록 빠릅니다." },
+  { key: "instructions", title: "명령어/KV", desc: "실행한 명령어 수, 곧 하는 일의 양입니다." },
+  { key: "ipc", title: "IPC", desc: "사이클당 명령어. 메모리를 기다리는 시간이 적을수록 높습니다.", ratio: true },
+  { key: "l1Misses", title: "L1 미스/KV", desc: "L1 데이터 캐시에서 못 찾은 읽기. 다른 노드나 key를 따라갈 때 생깁니다." },
+  { key: "tlbMisses", title: "dTLB 미스/KV", desc: "주소 변환 캐시 미스. 메모리 여기저기를 건너뛸수록 늘어납니다." },
+  { key: "llcMisses", title: "LLC 미스/KV", desc: "L3까지 놓친 읽기. 하드웨어 prefetch도 세므로 상대 비교로만 보세요." },
+];
+
+function hwValue(t, m, kvs) {
+  const p = t && t.perf;
+  if (!p) return null;
+  if (m.ratio) return p.cycles && p.instructions ? p.instructions / p.cycles : null;
+  return isNum(p[m.key]) && kvs > 0 ? p[m.key] / kvs : null;
+}
+
+function fmtHw(v, m) {
+  if (!isNum(v)) return "–";
+  if (m.ratio) return nf2.format(v);
+  return v >= 100 ? nf0.format(v) : nf1.format(v);
+}
+
+function hwDelta(head, other, name) {
+  if (!isNum(head) || !isNum(other) || other === 0) return null;
+  const d = (head / other - 1) * 100;
+  if (Math.abs(d) < 0.5) return `${name}와 같음`;
+  return `${name} 대비 ${d > 0 ? "+" : "−"}${nf0.format(Math.abs(d))}%`;
+}
+
+// ---------- KV samples and workload ----------
+const KV_SAMPLES = 8;  // RunService.KV_SAMPLES
+
+// Splits a key into its prefix (up to and including the first '|') and rest.
+function keyParts(key) {
+  const i = key.indexOf("|");
+  return i < 0 ? ["", key] : [key.slice(0, i + 1), key.slice(i + 1)];
+}
+
+// Bytes one KV takes inside a memtable beyond its key and value (node,
+// sequence number and type, varint lengths). 64MB held about 351K trades.
+const MEMTABLE_OVERHEAD_BYTES = 54;
+
+function heightTrait(s, p) {
+  const h = s.hashHeight;
+  let text = h >= 12
+    ? `HEAD, UPSTREAM의 bucket skiplist 높이 ${h}. SKIPLIST(12)와 조건이 같습니다.`
+    : `HEAD, UPSTREAM의 bucket skiplist 높이 ${h}(RocksDB 기본). bucket에 KV가 약 ${4 ** h}개를 넘으면 맨 위 레벨을 차례로 훑어 삽입이 느려집니다. SKIPLIST는 12입니다.`;
+  if (p && p.available && h < 12) {
+    const entry = p.avgKeyBytes[s.keyFormat] + p.avgValueBytes + MEMTABLE_OVERHEAD_BYTES;
+    const perMemtable = Math.min(s.kv, (s.memtableMb * 1024 * 1024) / entry);
+    const perBucket = perMemtable / p.symbols;
+    if (perBucket > 4 ** h) {
+      text += ` 이번 설정은 memtable 하나에 bucket당 약 ${fmtCount(perBucket)}개가 쌓여 이 영향을 크게 받습니다.`;
+    }
+  }
+  return text;
+}
+
+// Plain-language traits of the workload a run writes.
+function workloadTraits(s, p) {
+  const rows = [];
+  const acct = s.keyFormat === "symb_acct_tid";
+  rows.push(["key", acct
+    ? "trade_종목|계좌|거래ID. prefix는 첫 | 까지인 trade_종목| 입니다."
+    : "trade_종목|거래ID. prefix는 첫 | 까지인 trade_종목| 입니다."]);
+  if (p && p.available) {
+    const perPrefix = s.kv / p.symbols;
+    rows.push(["prefix 수", `종목 ${fmtCount(p.symbols)}개. HashSkipList는 prefix마다 bucket을 나눠 담으므로 bucket당 평균 약 ${fmtCount(perPrefix)}개 KV가 쌓입니다.`]);
+    rows.push(["쏠림", `종목별 거래 수는 중앙값 ${fmtCount(p.perSymbolMedian)}건, 최대 ${fmtCount(p.perSymbolMax)}건으로 고르지 않습니다. 인기 종목 bucket이 훨씬 깁니다.`]);
+  }
+  rows.push(["bucket 높이", heightTrait(s, p)]);
+  rows.push(["삽입 순서", acct
+    ? "같은 종목 안에서 계좌 번호가 먼저 와서, 새 KV가 bucket 중간 아무 곳에나 들어갑니다. 흩어진 삽입이라 여러 스레드가 동시에 써도 서로 덜 부딪힙니다."
+    : "Trade.txt가 거래 시각 순서라 같은 종목 안에서 거래ID가 계속 커집니다. 새 KV는 거의 항상 bucket 끝에 붙는 순차 삽입입니다."]);
+  if (p && p.available) {
+    const k = p.avgKeyBytes[s.keyFormat];
+    const v = p.avgValueBytes;
+    rows.push(["크기", `key 평균 ${k}B, value 평균 ${v}B(나머지 14개 컬럼). 이번 측정은 약 ${fmtBytes(s.kv * (k + v))}입니다.`]);
+    let src = `TPC-E Trade.txt 약 ${fmtCount(p.estimatedRows)}행, ${String(p.firstTime).slice(0, 10)}부터 거래 시각 순입니다.`;
+    if (s.kv > p.estimatedRows) src += " KV가 행 수보다 많아 파일을 다시 읽고 key 끝에 #1, #2를 붙입니다.";
+    rows.push(["데이터", src]);
+  } else if (p && p.error) {
+    rows.push(["데이터", p.error]);
+  }
+  const how = s.preload
+    ? `KV를 모두 메모리에 먼저 만든 뒤 소비자 ${s.consumers}개가 Put만 합니다. 파일 읽기는 시간에 들어가지 않습니다.`
+    : `생산자 스레드가 파일을 읽어 큐에 넣고, 소비자 ${s.consumers}개가 꺼내 Put합니다.`;
+  rows.push(["쓰기", `${how} WAL은 ${s.wal ? "켜서 Put마다 로그도 씁니다" : "꺼서 memtable에만 씁니다"}.`]);
+  return rows;
+}
+
 // ---------- card ----------
 class Card {
   constructor(bench) {
@@ -296,7 +624,9 @@ class Card {
     this.run = null;
     this.expanded = false;
     this.charts = new Map();
-    this.root = document.getElementById("card-template").content.firstElementChild.cloneNode(true);
+    this.row = document.getElementById("card-template").content.firstElementChild.cloneNode(true);
+    this.root = this.row.querySelector(".card");
+    this.panel = this.row.querySelector(".kv-panel");
     this.root.dataset.state = "idle";
     this.$ = (sel) => this.root.querySelector(sel);
     this.build();
@@ -306,8 +636,8 @@ class Card {
     const b = this.bench;
     this.$(".card-title").textContent = b.title;
     this.$(".summary").textContent = b.summary;
-    const specs = this.$(".specs");
-    b.specs.forEach((s) => specs.append(el("li", {}, s.label, el("b", { text: s.value }))));
+    this.setSettings(b.settings);
+    this.$(".settings-btn").addEventListener("click", () => settingsDialog.open(this));
 
     const targets = this.$(".targets");
     this.tiles = {};
@@ -388,6 +718,12 @@ class Card {
       }
     });
     this.chartPanels.forEach((p) => this.resize.observe(p.host));
+  }
+
+  setSettings(s) {
+    this.settings = s;
+    this.$(".specs").replaceChildren(...specChips(s).map(([label, value]) =>
+      el("li", {}, label, el("b", { text: value }))));
   }
 
   setExpanded(open) {
@@ -493,11 +829,69 @@ class Card {
       if (errors.length && state !== "running") this.showNotice(errors.join("\n"));
     }
 
+    this.renderSamples();
     if (this.expanded) this.renderDetail();
+  }
+
+  // The panel beside the card: KVs the run is writing and what they are like.
+  renderSamples() {
+    const r = this.run;
+    const open = !!r;
+    this.row.classList.toggle("has-panel", open);
+    document.body.classList.toggle("panels-open",
+      !!document.querySelector(".card-row.has-panel"));
+    this.panel.setAttribute("aria-hidden", String(!open));
+    if (!open) return;
+    const s = r.settings || this.settings;
+    const samples = r.kvSamples || [];
+    const key = `${r.id}:${samples.length}:${!!app.workload}`;
+    if (this.samplesKey === key) return;
+    const fresh = this.samplesKey && this.samplesKey.startsWith(`${r.id}:`);
+    this.samplesKey = key;
+
+    this.panel.querySelector(".kv-hint").textContent = `${fmtCount(s.kv)}개 중 ${KV_SAMPLES}개, 고른 간격`;
+    const stride = Math.max(1, Math.floor(s.kv / KV_SAMPLES));
+    const byIndex = new Map(samples.map((x) => [x.index, x]));
+    const items = [];
+    for (let i = 0; i < KV_SAMPLES; i++) {
+      const idx = i * stride;
+      const x = byIndex.get(idx);
+      if (!x) {
+        items.push(el("li", { class: "kv-item pending" },
+          el("span", { class: "kv-idx", text: `${fmtCount(idx + 1)}번째 KV` }),
+          el("span", { class: "kv-wait", text: r.active ? "생산자가 여기에 오면 채워집니다" : "기록되지 않았습니다" })));
+        continue;
+      }
+      const [prefix, rest] = keyParts(x.key);
+      const li = el("li", { class: "kv-item" },
+        el("span", { class: "kv-idx", text: `${fmtCount(idx + 1)}번째 KV` }),
+        el("code", { class: "kv-key" }, el("mark", { title: "prefix", text: prefix }), rest),
+        el("code", { class: "kv-val", title: x.value, text: x.value }));
+      if (fresh && !this.seenSamples.has(idx)) li.classList.add("arrive");
+      items.push(li);
+    }
+    this.seenSamples = new Set(samples.map((x) => x.index));
+    this.panel.querySelector(".kv-list").replaceChildren(...items);
+
+    const p = app.workload;
+    this.panel.querySelector(".kv-traits-hint").textContent =
+      p && p.available ? `Trade.txt 앞 ${fmtCount(p.sampledRows)}행 기준` : "";
+    this.panel.querySelector(".kv-traits").replaceChildren(...workloadTraits(s, p).flatMap(([k, v]) =>
+      [el("dt", { text: k }), el("dd", { text: v })]));
   }
 
   renderDetail() {
     const r = this.run;
+    const note = this.$(".run-note");
+    if (r && r.settings) {
+      const chips = specChips(r.settings).map(([k, v]) => `${k} ${v}`).join(", ");
+      note.textContent = sameSettings(r.settings, this.settings)
+        ? `이 결과의 설정: ${chips}`
+        : `이 결과는 이전 설정으로 측정했습니다: ${chips}. 바꾼 설정은 다음 측정부터 적용됩니다.`;
+      note.hidden = false;
+    } else {
+      note.hidden = true;
+    }
     // Comparison bars
     for (const c of this.compare) {
       const vals = Object.fromEntries(TARGETS.map((m) => [m, r ? c.get(r.targets[m]) : null]));
@@ -534,8 +928,55 @@ class Card {
       }
     }
 
+    this.renderHw();
     this.renderStats();
     this.renderLogs();
+  }
+
+  // perf stat counters, read when each process exits.
+  renderHw() {
+    const r = this.run;
+    const host = this.$(".hw");
+    if (!r) { host.replaceChildren(); this.hwKey = null; return; }
+    const done = !r.active;
+    const key = `${r.id}:${done}:${TARGETS.map((m) => (r.targets[m] && r.targets[m].perf ? Object.keys(r.targets[m].perf).length : 0)).join(",")}`;
+    if (this.hwKey === key) return;
+    this.hwKey = key;
+
+    const head = el("div", { class: "hw-head" },
+      el("h3", { class: "panel-title", text: "하드웨어 카운터" }),
+      el("span", { class: "panel-hint", text: "perf stat, 측정이 끝난 뒤의 프로세스 전체 값 (파일 읽기 포함)" }));
+    if (r.perfNote) {
+      host.replaceChildren(head, el("p", { class: "hw-wait", text: r.perfNote }));
+      return;
+    }
+    if (!done) {
+      host.replaceChildren(head, el("p", { class: "hw-wait", text: "측정이 끝나면 세 memtable의 카운터가 여기에 나옵니다." }));
+      return;
+    }
+    const kvs = num(r.targets.HEAD && r.targets.HEAD.result.consumed) || (r.settings && r.settings.kv);
+    const panels = HW_METRICS.map((m) => {
+      const vals = Object.fromEntries(TARGETS.map((t) => [t, hwValue(r.targets[t], m, kvs)]));
+      const max = Math.max(0, ...Object.values(vals).filter(isNum));
+      const bars = el("div", { class: "bars" }, ...TARGETS.map((t) => {
+        const v = vals[t];
+        const fill = el("div", { class: "bar-fill" });
+        fill.style.width = isNum(v) && max > 0 ? `${(v / max) * 100}%` : "0";
+        return el("div", { class: "bar-row", "data-target": t },
+          el("span", { class: "bar-name", text: t }),
+          el("div", { class: "bar-track" }, fill),
+          el("span", { class: "bar-value", text: fmtHw(v, m) }));
+      }));
+      const deltas = [hwDelta(vals.HEAD, vals.UPSTREAM, "UPSTREAM"), hwDelta(vals.HEAD, vals.SKIPLIST, "SKIPLIST")]
+        .filter(Boolean);
+      return el("div", { class: "panel" },
+        el("div", { class: "panel-head" }, el("h3", { class: "panel-title", text: m.title })),
+        el("div", { class: "panel-body" },
+          el("p", { class: "hw-desc", text: m.desc }), bars,
+          el("div", { class: "bar-delta", text: deltas.length ? `HEAD: ${deltas.join(", ")}` : " " })));
+    });
+    host.replaceChildren(head, el("div", { class: "hw-grid" }, ...panels),
+      el("p", { class: "hw-foot", text: "세 프로세스를 동시에 실행해 L3 캐시를 나눠 쓰므로, 하나씩 따로 잰 값보다 미스가 많을 수 있습니다." }));
   }
 
   renderStats() {
@@ -636,9 +1077,11 @@ const app = {
       host.append(el("div", { class: "empty-state", text: "서버에 연결하지 못했습니다. 앱이 실행 중인지 확인하세요." }));
       return;
     }
+    settingsDialog.init();
+    this.workload = await fetch("/api/workload").then((r) => r.json()).catch(() => null);
     this.cards = list.map((b) => new Card(b));
     this.cards.forEach((c) => {
-      host.append(c.root);
+      host.append(c.row);
       c.$(".logs").addEventListener("toggle", () => c.renderLogs());
     });
     await Promise.all(this.cards.map((c) => this.poll(c)));

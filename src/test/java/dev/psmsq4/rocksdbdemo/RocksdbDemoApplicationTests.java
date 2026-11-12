@@ -3,17 +3,22 @@ package dev.psmsq4.rocksdbdemo;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import dev.psmsq4.rocksdbdemo.bench.Benchmark;
 import dev.psmsq4.rocksdbdemo.bench.BenchmarkCatalog;
+import dev.psmsq4.rocksdbdemo.bench.PerfStat;
 import dev.psmsq4.rocksdbdemo.bench.PromText;
+import dev.psmsq4.rocksdbdemo.bench.RunSettings;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.MediaType;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.web.servlet.MockMvc;
 
 @SpringBootTest
@@ -33,9 +38,50 @@ class RocksdbDemoApplicationTests {
         assertThat(all.get(0).id()).isEqualTo("flush");
         for (Benchmark b : all) {
             assertThat(b.targets()).isNotEmpty();
-            assertThat(b.timeoutSeconds()).isLessThanOrEqualTo(30);
-            assertThat(b.args()).noneMatch(a -> a.startsWith("--memtable") || a.startsWith("--db"));
+            assertThat(b.defaults().problem()).isNull();
+            // The default workload is sized to finish within about 30 s.
+            assertThat(b.defaults().estimateSeconds()).isLessThanOrEqualTo(30);
+            assertThat(b.fixedArgs()).noneMatch(a -> a.startsWith("--memtable") || a.startsWith("--db"));
         }
+    }
+
+    @Test
+    void settingsValidateAndBecomeArguments() {
+        RunSettings ok = new RunSettings(2_300_000, 256, "symb_acct_tid", true, true, 4, 12);
+        assertThat(ok.problem()).isNull();
+        assertThat(ok.toArgs()).containsExactly("--limit=2300000", "--write_buffer_size=256MB",
+                "--key_format=symb_acct_tid", "--consumers=4", "--hash_height=12", "--preload");
+        assertThat(new RunSettings(100_000, 64, "symb_tid", false, false, 1, 4).problem()).isNull();
+        assertThat(new RunSettings(100_000, 64, "symb_tid", false, false, 1, 7).problem()).isNotNull();
+        assertThat(new RunSettings(10_000_000, 64, "symb_tid", false, false, 1, 12).toArgs())
+                .contains("--disable_wal").doesNotContain("--preload");
+
+        assertThat(new RunSettings(150_000, 64, "symb_tid", false, false, 1, 12).problem()).isNotNull();
+        assertThat(new RunSettings(100_000, 100, "symb_tid", false, false, 1, 12).problem()).isNotNull();
+        assertThat(new RunSettings(100_000, 4096, "symb_tid", false, false, 1, 12).problem()).isNotNull();
+        assertThat(new RunSettings(100_000, 64, "nope", false, false, 1, 12).problem()).isNotNull();
+        assertThat(new RunSettings(100_000, 64, "symb_tid", false, false, 9, 12).problem()).isNotNull();
+        // Larger and WAL-on workloads are estimated to take longer.
+        assertThat(new RunSettings(30_000_000, 64, "symb_tid", false, false, 1, 12).estimateSeconds())
+                .isGreaterThan(new RunSettings(10_000_000, 64, "symb_tid", false, false, 1, 12).estimateSeconds());
+        assertThat(new RunSettings(10_000_000, 64, "symb_tid", false, true, 1, 12).estimateSeconds())
+                .isGreaterThan(new RunSettings(10_000_000, 64, "symb_tid", false, false, 1, 12).estimateSeconds());
+    }
+
+    @Test
+    void parsesPerfStatCsv() {
+        var c = PerfStat.parse("""
+                # started on Thu Nov 12 2026
+
+                138955752527,,cpu_core/cycles/u,155161436,100.00,,
+                134151215778,,cpu_core/instructions/u,155161436,100.00,0.97,insn per cycle
+                <not counted>,,cpu_core/dTLB-load-misses/u,0,0.00,,
+                1359592877,,cache-misses:u,155161436,100.00,,
+                """);
+        assertThat(c).containsEntry("cycles", 138955752527d)
+                .containsEntry("instructions", 134151215778d)
+                .containsEntry("llcMisses", 1359592877d)
+                .doesNotContainKey("tlbMisses");
     }
 
     @Test
@@ -58,8 +104,38 @@ class RocksdbDemoApplicationTests {
         mvc.perform(get("/api/benchmarks"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].id").value("flush"))
-                .andExpect(jsonPath("$[0].targets.length()").value(3));
+                .andExpect(jsonPath("$[0].targets.length()").value(3))
+                .andExpect(jsonPath("$[0].settings.kv").value(10_000_000))
+                .andExpect(jsonPath("$[0].settings.hashHeight").value(12));
         mvc.perform(get("/api/benchmarks/flush/run")).andExpect(status().isNoContent());
+        // Profiles Trade.txt when present, otherwise says why not.
+        mvc.perform(get("/api/workload"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.available").exists())
+                .andExpect(jsonPath("$.file").exists());
         mvc.perform(post("/api/benchmarks/nope/run")).andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DirtiesContext
+    void updatesSettingsAndRejectsBadOnes() throws Exception {
+        mvc.perform(get("/api/benchmarks/flush/settings"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.limits.kvStep").value(100_000))
+                .andExpect(jsonPath("$.limits.memtableStepMb").value(128));
+        mvc.perform(put("/api/benchmarks/flush/settings").contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"kv":500000,"memtableMb":128,"keyFormat":"symb_acct_tid",
+                                 "preload":true,"wal":true,"consumers":2,"hashHeight":4}"""))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.settings.memtableMb").value(128));
+        mvc.perform(get("/api/benchmarks"))
+                .andExpect(jsonPath("$[0].settings.keyFormat").value("symb_acct_tid"));
+        mvc.perform(put("/api/benchmarks/flush/settings").contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"kv":123,"memtableMb":128,"keyFormat":"symb_tid",
+                                 "preload":false,"wal":false,"consumers":1,"hashHeight":12}"""))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").exists());
     }
 }
