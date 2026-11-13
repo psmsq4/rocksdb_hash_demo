@@ -136,6 +136,8 @@
 .lg-hit { --c: var(--neon-hit); }
 .lg-new { --c: var(--neon-new); }
 .lg-copy { --c: var(--neon-copy); }
+.sym { margin-left: auto; color: var(--ink-3); }
+.sym b { color: var(--ink-2); font-weight: 400; }
 
 /* Two sides */
 .duel {
@@ -254,6 +256,14 @@
   font-weight: 700;
   filter: drop-shadow(0 0 4px var(--accent));
 }
+.diagram text.cplx {
+  fill: var(--accent);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  filter: drop-shadow(0 0 4px var(--accent)) drop-shadow(0 0 12px var(--accent));
+}
+.diagram text.cplx-note { fill: var(--ink-2); font-size: 11px; }
 .diagram .counter text { fill: var(--neon-copy); font-size: 12px; }
 .diagram .upnode rect { fill: var(--accent); filter: drop-shadow(0 0 4px var(--accent)); }
 .diagram .upline { stroke: var(--accent); stroke-width: 1.2; stroke-dasharray: 3 3; opacity: 0.8; }

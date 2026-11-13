@@ -49,7 +49,13 @@ html { -webkit-text-size-adjust: 100%; }
 
 body {
   margin: 0;
-  background: var(--bg);
+  /* Faint HEAD (cyan) and UPSTREAM (orange) glows over a dot grid. */
+  background:
+    radial-gradient(ellipse 60% 50% at 0% 0%, rgba(62, 232, 255, 0.07), transparent 70%),
+    radial-gradient(ellipse 60% 50% at 100% 100%, rgba(255, 154, 60, 0.06), transparent 70%),
+    radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1.6px) 0 0 / 22px 22px,
+    var(--bg);
+  background-attachment: fixed;
   color: var(--ink);
   font-family: var(--font);
   font-size: 14px;
@@ -259,7 +265,154 @@ button { font: inherit; color: inherit; }
   transition: max-width 420ms cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 .card-row.has-panel,
-.panels-open .intro { max-width: calc(var(--row) + var(--panel-gap) + var(--panel-w)); }
+.panels-open .intro,
+.panels-open .lineup { max-width: calc(var(--row) + var(--panel-gap) + var(--panel-w)); }
+
+/* What each compared memtable is, under the intro line */
+.lineup {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  max-width: var(--row);
+  margin: -8px auto 20px;
+  padding: 0;
+  list-style: none;
+  transition: max-width 420ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.lineup-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 14px 10px 18px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  word-break: keep-all;
+}
+.lineup-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--c);
+}
+.lineup-name { font-size: 13px; font-weight: 700; color: var(--ink); }
+.lineup-note { color: var(--ink-3); font-weight: 400; }
+.lineup-desc { color: var(--ink-2); font-size: 12px; line-height: 1.5; }
+.lineup-desc::before { content: "· "; color: var(--ink-3); }
+.lineup-link {
+  cursor: pointer;
+  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+.lineup-link:hover,
+.lineup-link:focus-visible {
+  border-color: var(--head);
+  box-shadow: 0 0 0 1px var(--head), 0 0 18px rgba(57, 135, 229, 0.25);
+  outline: none;
+}
+.lineup-more {
+  float: right;
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 400;
+  transition: color 160ms ease;
+}
+.lineup-link:hover .lineup-more,
+.lineup-link:focus-visible .lineup-more { color: var(--head); }
+
+/* HEAD commit log dialog */
+.modal.modal-wide { width: min(820px, calc(100vw - 32px)); }
+.cm-headline { min-width: 0; }
+.cm-sub { margin: 4px 0 0; color: var(--ink-3); font-size: 12px; word-break: keep-all; }
+.cm-sub code { color: var(--head); }
+.cm-body { padding-top: 16px; overflow-y: auto; }
+.cm-loading { color: var(--ink-3); }
+.cm-add { color: #5ac47c; }
+.cm-del { color: #e5735a; }
+.cm-list { margin: 0; padding: 0; list-style: none; }
+.cm-commit {
+  position: relative;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 14px;
+  padding-bottom: 22px;
+}
+.cm-commit:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  left: 13px;
+  top: 30px;
+  bottom: 2px;
+  width: 2px;
+  background: linear-gradient(var(--head), rgba(57, 135, 229, 0.15));
+}
+.cm-no {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 2px solid var(--head);
+  border-radius: 50%;
+  color: var(--head);
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: 0 0 10px rgba(57, 135, 229, 0.55);
+}
+.cm-main { min-width: 0; word-break: keep-all; }
+.cm-title { margin: 3px 0 2px; font-size: 15px; }
+.cm-orig { margin: 0 0 8px; color: var(--ink-3); font-size: 12px; }
+.cm-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-bottom: 10px; font-size: 12px; color: var(--ink-2); }
+.cm-hash {
+  padding: 1px 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  color: var(--ink);
+  text-decoration: none;
+}
+.cm-hash:hover { border-color: var(--head); color: var(--head); }
+.cm-badge {
+  padding: 1px 8px;
+  border-radius: 6px;
+  background: rgba(57, 135, 229, 0.16);
+  color: #8fbcf2;
+}
+.cm-sec {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 10px;
+  padding: 7px 0;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+}
+.cm-label { color: var(--ink-3); font-size: 12px; padding-top: 1px; }
+.cm-items { margin: 0; padding-left: 16px; color: var(--ink-2); line-height: 1.65; }
+.cm-items li::marker { color: var(--ink-3); }
+.cm-metrics { display: flex; flex-direction: column; gap: 4px; }
+.cm-metric { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 16px; color: var(--ink-2); }
+.cm-metric-val { white-space: nowrap; }
+.cm-before { color: var(--ink-3); }
+.cm-metric-val strong { color: var(--ink); }
+.cm-tests { display: flex; flex-wrap: wrap; gap: 5px; }
+.cm-test {
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--ink-2);
+  font-size: 11px;
+}
+.cm-test-new { border-color: rgba(90, 196, 124, 0.5); color: #5ac47c; }
+.cm-note { margin: 6px 0 0; color: var(--ink-3); font-size: 12px; }
+.cm-files { margin-top: 6px; font-size: 12px; color: var(--ink-3); }
+.cm-files summary { cursor: pointer; padding: 4px 0; }
+.cm-files summary:hover { color: var(--ink-2); }
+.cm-files ul { margin: 2px 0 0; padding: 0; list-style: none; }
+.cm-files li { display: flex; gap: 10px; padding: 2px 0; }
+.cm-files code { flex: 1; min-width: 0; overflow-wrap: anywhere; color: var(--ink-2); }
+.cm-files li > span { min-width: 36px; text-align: right; }
 .card-row > .card { flex: 1 1 auto; min-width: 0; container-type: inline-size; }
 
 .kv-panel {
@@ -1054,7 +1207,9 @@ button { font: inherit; color: inherit; }
 @media (max-width: 1100px) {
   .card-row,
   .card-row.has-panel { flex-direction: column; align-items: stretch; max-width: var(--row); }
-  .panels-open .intro { max-width: var(--row); }
+  .panels-open .intro,
+  .panels-open .lineup { max-width: var(--row); }
+  .lineup { grid-template-columns: minmax(0, 1fr); gap: 8px; }
   .kv-panel { display: none; }
   .has-panel > .kv-panel {
     display: block;
@@ -1073,6 +1228,8 @@ button { font: inherit; color: inherit; }
 }
 
 @media (max-width: 720px) {
+  .cm-sec { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .lineup-more { float: none; display: block; margin-top: 2px; }
   :root { --card-h: auto; --pad: 16px; }
   :root { --topbar-h: 52px; }
   .topbar { padding: 0 16px; }

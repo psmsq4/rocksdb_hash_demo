@@ -26,7 +26,7 @@ RocksDB `HashSkipListRep`(prefix hash memtable)의 두 결격 사유를 없앴�
 
 | 무엇 | 경로 | 상태 |
 |---|---|---|
-| 작업 브랜치 | `~/rocksdb/rocksdb_hash`, 브랜치 `hash_skiplist_improvements` | 커밋 4개 + base. **push 안 됨** (origin은 facebook/rocksdb) |
+| 작업 브랜치 | 이 저장소의 submodule `rocksdb/` (github.com/psmsq4/rocksdb_hash, 브랜치 `hash_skiplist_improvements`) | 커밋 5개 + base, push됨. 서버의 옛 경로 `~/rocksdb/rocksdb_hash`는 `rocksdb_hash_demo/rocksdb`를 가리키는 심볼릭 링크 |
 | base | `e591f5f1a` (2026-11-08 기준 facebook/rocksdb main) | |
 | 시연 앱, 벤치, 실험 | `~/rocksdb/rocksdb_hash_demo` (이 저장소) | |
 | TPC-E 데이터 | `~/tpc-e/flat_out/*.txt` (5.7GB, Trade.txt 3.2GB, 28,664,881행) | EGen 5000 customers, scale factor 500, initial trade days 300 (`~/tpc-e/bin/EGenLoaderFrom1To5000.log`) |
@@ -34,15 +34,22 @@ RocksDB `HashSkipListRep`(prefix hash memtable)의 두 결격 사유를 없앴�
 | 연구용 저장소 | `~/oss_bigdata/rocksdb`, 브랜치 `prefix_layer` | 로그, 계측 코드로 오염됨. **쓰지 말 것** |
 | Claude 작업 메모 | `~/.claude/projects/-home-psmsq4-oss-bigdata-rocksdb/memory/` | 서버의 Claude Code에서도 쓰려면 복사 |
 
-## 2. 커밋 (`~/rocksdb/rocksdb_hash`, 오래된 순)
+### 1.1 저장소 구성 (submodule)
+- 이 저장소가 상위 저장소이고, RocksDB fork는 `rocksdb/`에 git submodule로 들어 있다(`.gitmodules`, branch = `hash_skiplist_improvements`). 상위 저장소는 RocksDB의 특정 커밋을 가리키므로 측정 결과와 RocksDB 버전이 함께 기록된다.
+- 처음 받기: `git clone --recursive https://github.com/psmsq4/rocksdb_hash_demo.git` (이미 받았으면 `git submodule update --init`).
+- RocksDB를 고칠 때: `rocksdb/`에서 커밋하고 push한 뒤, 상위 저장소에서 `git add rocksdb`로 가리키는 커밋을 갱신해 커밋한다. RocksDB 커밋 메시지에는 `Co-Authored-By`, `Claude-Session` 줄을 넣지 않는다.
+- 빌드 스크립트(`op_trade_bench/build.sh`, `gen_upstream.sh`, `experiments/scripts/build_libs.sh`)의 `ROCKSDB_ROOT` 기본값은 이 submodule이다. `build-rel/`은 submodule의 `.git/info/exclude`로 무시한다(새로 받은 곳에서도 상태를 깨끗하게 두려면 같은 줄을 넣는다).
+- 서버에서는 원래 `~/rocksdb/rocksdb_hash` checkout을 `rocksdb/`로 옮겨 그대로 submodule로 등록했다. `/tmp/otb_work/wt` worktree가 연결돼 있어 `git submodule absorbgitdirs`는 하지 않았고, `.git`이 `rocksdb/` 안에 그대로 있다.
+
+## 2. 커밋 (submodule `rocksdb/`, 오래된 순)
 
 | 커밋 | 제목 | 핵심 |
 |---|---|---|
-| efcdab406 | Use InlineSkipList for HashSkipListRep buckets | bucket을 `SkipList`에서 `InlineSkipList`로 교체. key가 node 안에 있어야 하므로 `Allocate()`를 override해 `key_allocator_`(삽입은 하지 않는 InlineSkipList)로 node를 할당하고 나중에 bucket에 연결 (zero-copy) |
-| fd1587399 | Support concurrent writes in HashSkipListRep | `InsertConcurrently()` 구현, bucket 설치를 `compare_exchange_strong`으로, factory가 동시 쓰기 지원을 보고 |
-| aaa3f6e4e | Iterate HashSkipListRep in total order without copying | `prefix_list_`(user comparator로 정렬된 prefix InlineSkipList) + `PrefixOrderedIterator`. 그룹 경계는 `InlineSkipList::Iterator::SeekToFirstNotMatching/SeekToLastMatching`(predicate 탐색, 새로 추가)으로 찾음. `MemTableRep::KeyComparator::user_comparator()` 추가(public API 변경) |
-| 9d92aecc1 | Give HashSkipListRep's prefix list its own minimum height | `prefix_list_` 높이를 `max(skiplist_height, 12)`로. 기본 높이 4는 prefix가 많으면 선형 탐색이 됨 |
-| 2561b92b7 | Skip the prefix list lookup on HashSkipListRep inserts | bucket마다 마지막 등록 prefix의 `prefix_list_` 항목을 기억(`HashBucket::known_prefix`, release/acquire). insert마다 하던 `prefix_list_` 탐색 제거. `TotalOrderIterator` 테스트에 bucket 1000개 조합 추가 |
+| 91549bab9 | Use InlineSkipList for HashSkipListRep buckets | bucket을 `SkipList`에서 `InlineSkipList`로 교체. key가 node 안에 있어야 하므로 `Allocate()`를 override해 `key_allocator_`(삽입은 하지 않는 InlineSkipList)로 node를 할당하고 나중에 bucket에 연결 (zero-copy) |
+| 4f8df92bc | Support concurrent writes in HashSkipListRep | `InsertConcurrently()` 구현, bucket 설치를 `compare_exchange_strong`으로, factory가 동시 쓰기 지원을 보고 |
+| 5384b9422 | Iterate HashSkipListRep in total order without copying | `prefix_list_`(user comparator로 정렬된 prefix InlineSkipList) + `PrefixOrderedIterator`. 그룹 경계는 `InlineSkipList::Iterator::SeekToFirstNotMatching/SeekToLastMatching`(predicate 탐색, 새로 추가)으로 찾음. `MemTableRep::KeyComparator::user_comparator()` 추가(public API 변경) |
+| 42ac47a08 | Give HashSkipListRep's prefix list its own minimum height | `prefix_list_` 높이를 `max(skiplist_height, 12)`로. 기본 높이 4는 prefix가 많으면 선형 탐색이 됨 |
+| 1888cce21 | Skip the prefix list lookup on HashSkipListRep inserts | bucket마다 마지막 등록 prefix의 `prefix_list_` 항목을 기억(`HashBucket::known_prefix`, release/acquire). insert마다 하던 `prefix_list_` 탐색 제거. `TotalOrderIterator` 테스트에 bucket 1000개 조합 추가 |
 
 release note는 `unreleased_history/`에 4개(앞 3개 커밋분).
 
@@ -100,7 +107,7 @@ upstream +19.8MB(1M key), HEAD 0.
 | 512MB, 280만 건, 계좌 key | 2,584 ms | 2,031 ms (-21.4%) | 1,803 ms |
 | 1GB, 560만 건, 계좌 key | 7,896 ms | 3,963 ms (-49.8%) | 4,802 ms |
 
-HEAD는 초당 약 140만 건으로 일정, upstream은 크기가 클수록 느려짐(정렬용 복사가 O(n log n)).
+HEAD는 초당 약 140만 건으로 일정, upstream은 크기가 클수록 느려짐(flush 때 memtable 전체를 새 SkipList로 복사. bucket마다 첫 entry만 O(log N) 탐색이고 나머지는 fast-path라 복사는 O(B + N + K·log N)으로 거의 선형이지만, 한 벌을 더 만들고 100만 bucket을 모두 훑는다).
 자동 flush(64MB 기본, 단일 스레드)에서도 평균 flush 시간이 22~24% 짧았다. 단, flush는
 백그라운드라 stall이 없으면 처리량 숫자에는 드러나지 않는다.
 
@@ -205,7 +212,7 @@ HEAD는 초당 약 140만 건으로 일정, upstream은 크기가 클수록 느�
 TPC-E Trade.txt를 생산자 → 큐 → 소비자로 RocksDB에 Put한다. 요구사항 원문은 `op_trade_bench/CLAUDE.md`.
 
 ```bash
-op_trade_bench/build.sh          # ~/rocksdb/rocksdb_hash/build-rel/librocksdb.so에 링크, -fno-rtti 필수
+op_trade_bench/build.sh          # rocksdb/build-rel/librocksdb.so(submodule)에 링크, -fno-rtti 필수
 op_trade_bench/out/op_trade_bench --memtable=HEAD|UPSTREAM|SKIPLIST [옵션]
 ```
 
@@ -250,7 +257,8 @@ op_trade_bench/build.sh                                            # 측정기 �
 - 네 번째 카드 "Point query (점 조회)": 500만 건, 2048MB(flush 없음), 계좌 key, preload, 높이 12, hit / miss / 없는 종목을 4초씩. 약 29초(DB를 닫을 때 2GB memtable flush가 있어 예상보다 길다). 서버에서 hit p50 HEAD 2.70 / SKIPLIST 2.96 / UPSTREAM 3.22µs, 없는 종목 p50 hash 0.31~0.36 / SKIPLIST 1.99µs. 없는 종목 패널은 SKIPLIST와 비교한다.
 - flush 카드와 멀티 스레드 카드는 "정확도 검증"이 기본으로 켜져 있다(설정 모달에서 끌 수 있음). 끝나면 펼친 화면의 "정확도" 패널에 세 memtable의 KV 개수, key 순서, flush 전후 내용 해시, SST 파일 수와 크기를 나란히 보여주고 일치 여부를 판정한다. 검증 때문에 flush 카드 약 28초, 멀티 스레드 카드 약 31초.
 - 헤더 왼쪽 햄버거 아이콘에 마우스를 올리면(키보드는 포커스) 왼쪽에서 메뉴가 페이지 위로 나오고 페이지는 서서히 어두워진다. 떼면 닫히며 다시 밝아진다(CSS만, `app.css`의 `.nav`). 메뉴는 "벤치마크"(`/`)와 "아키텍처"(`/architecture.html`).
-- 아키텍처 페이지(`architecture.html`, `arch.js`, `arch.css`)는 HEAD(왼쪽)와 UPSTREAM(오른쪽)을 같은 장면으로 나란히 애니메이션한다. 장면은 1) 새 종목 삽입(Allocate, Transform, bucket miss와 HashBucket CAS 설치, RegisterPrefix로 prefix_list_ 정렬 삽입과 known_prefix 캐싱, bucket 삽입. UPSTREAM은 key와 노드를 Arena 양 끝에서 따로 할당) 2) 같은 종목 삽입(bucket hit, known_prefix 캐시 적중으로 prefix_list_ 건너뜀) 3) FLUSH(HEAD는 PrefixOrderedIterator가 prefix_list_ 순서로 bucket 경계를 넘으며 출력, UPSTREAM은 GetIterator가 모든 bucket을 새 SkipList로 복사한 뒤 출력) 4) Range query(Put 생략. prefix scan은 둘 다 hash로 bucket을 찾지만 entry마다 HEAD는 노드 한 곳, UPSTREAM은 노드와 멀리 떨어진 key 두 곳을 읽음. total-order scan은 HEAD가 prefix_list_로 Seek해 경계를 넘고, UPSTREAM은 iterator를 열 때 전체 복사) 5) 멀티 스레드 쓰기(HEAD는 LaunchParallelMemTableWriters로 T1~T3가 동시에 InsertConcurrently, UPSTREAM은 동시 쓰기가 꺼져 쓰기 그룹 리더 T1이 하나씩 넣고 T2·T3는 대기). 28단계, 캡션에 서버 실측값을 붙임, 재생/일시정지/단계 이동/속도, 키보드 ←→와 Space. 각 단계 상태를 미리 계산해 key별 SVG 그룹을 옮기는 방식이다.
+- 벤치마크 페이지 상단 HEAD 설명 블록을 누르면 RocksDB 변경 커밋 5개를 한글로 정리한 모달이 뜬다. 내용은 `static/rocksdb-commits.json`(문제/변경/구현/측정/검증 섹션, 파일별 +/−, GitHub 커밋 링크)이고 처음 열 때 한 번 불러온다. rocksdb 브랜치에 커밋을 더하면 이 파일도 손으로 고친다.
+- 아키텍처 페이지(`architecture.html`, `arch.js`, `arch.css`)는 HEAD(왼쪽)와 UPSTREAM(오른쪽)을 같은 장면으로 나란히 애니메이션한다. 장면은 1) 새 종목 삽입(Allocate, Transform, bucket miss와 HashBucket CAS 설치, RegisterPrefix로 prefix_list_ 정렬 삽입과 known_prefix 캐싱, bucket 삽입. UPSTREAM은 key와 노드를 Arena 양 끝에서 따로 할당) 2) 같은 종목 삽입(bucket hit, known_prefix 캐시 적중으로 prefix_list_ 건너뜀) 3) FLUSH(HEAD는 PrefixOrderedIterator가 prefix_list_ 순서로 bucket 경계를 넘으며 출력, UPSTREAM은 GetIterator가 모든 bucket을 새 SkipList로 복사한 뒤 출력) 4) Range Prefix Scan(Put 생략. 둘 다 hash로 bucket을 찾지만 entry마다 HEAD는 노드 한 곳, UPSTREAM은 노드와 멀리 떨어진 key 두 곳을 읽음) 5) Range Total Order Scan(HEAD가 prefix_list_로 Seek해 bucket 경계를 넘으며 3개를 읽는 동안, UPSTREAM은 bucket 1·4·6을 한 단계씩 복사하고 마지막 단계에서야 복사본에서 Seek 중) 6) 멀티 스레드 쓰기(HEAD는 LaunchParallelMemTableWriters로 T1~T3가 동시에 InsertConcurrently, UPSTREAM은 동시 쓰기가 꺼져 쓰기 그룹 리더 T1이 하나씩 넣고 T2·T3는 대기) 7) 해시 충돌(새 종목 AAPL|이 IDBE|의 bucket 4로 감. HEAD는 bucket이 있어도 known_prefix 불일치로 AddPrefix → prefix_list_ 정렬 삽입 → known_prefix를 AAPL|로 교체. 이어서 IDBE|가 오면 또 불일치, prefix_list_에서 찾기만 하고 known_prefix를 되돌림. total-order scan은 같은 bucket의 다른 종목에서 그룹을 끊고 다음 prefix의 bucket으로 넘어감. UPSTREAM은 추가 작업 없이 같은 SkipList에 섞어 넣고, prefix scan은 key 전체 비교라 그대로 맞음). 38단계, viewBox 640x540, 그림 오른쪽 위에 장면별 시간복잡도를 네온 텍스트로 표시(`CPLX`, 기호는 색 설명 줄), 캡션에 서버 실측값을 붙임, 아래 결과 줄 이름은 FLUSH에서 "flush 출력", Range scan에서 "scan 결과", 재생/일시정지/단계 이동/속도, 키보드 ←→와 Space. 각 단계 상태를 미리 계산해 key별 SVG 그룹을 옮기는 방식이다.
 - 카드의 톱니 버튼이 설정 모달을 연다. KV 개수(100,000 단위, 최대 3,000만), memtable 크기(64MB 또는 128MB 단위, 최대 2GB), key 형식(하나만 선택), bucket 높이(4 또는 12, 기본 12), preload, WAL, 동시 memtable 쓰기(HEAD/SKIPLIST, 기본 켬), 소비자 개수(1~8, 프로세스마다 CPU 4개라 4 이하 권장). 설정은 서버 메모리에 카드별로 저장되고(재시작하면 기본값) 다음 측정부터 적용된다. 검증과 인자 변환은 `bench/RunSettings.java`.
 - 측정을 시작하면 카드 오른쪽에 KV 샘플 패널이 열리고, 카드와 패널이 한 블록으로 가운데 정렬된다. 샘플은 측정기가 실제로 만든 KV 8개(`--print_samples=8`)이고, 워크로드 특성은 `bench/WorkloadProfile.java`가 Trade.txt 앞 200만 행에서 구한 값(종목 3,425개, 종목별 거래 수, key/value 평균 크기)으로 쓴다. 화면 폭 1100px 이하에서는 패널이 카드 아래로 내려간다.
 - 각 프로세스는 `perf stat`(카운팅만, `demo.perf-counters`)으로 감싸 실행하고, 측정이 끝나면 펼친 화면의 "하드웨어 카운터"에 KV당 사이클, 명령어, IPC, L1/dTLB/LLC 미스를 보여준다(`bench/PerfStat.java`). 하이브리드 CPU라 `cpu_core/<event>/u`를 쓰고 P코어에 고정해야 읽힌다. 시작할 때 P코어에서 한 번 시험해 안 되면 카운터 없이 측정만 한다. 중단 버튼은 perf의 자식(측정기)까지 끈다.
@@ -261,7 +269,7 @@ op_trade_bench/build.sh                                            # 측정기 �
 ### 5.3 실험 스크립트
 `experiments/README.md` 참고. 라이브러리 빌드는 `experiments/scripts/build_libs.sh`.
 
-### 5.4 RocksDB 빌드와 테스트 (`~/rocksdb/rocksdb_hash`)
+### 5.4 RocksDB 빌드와 테스트 (submodule `rocksdb/`)
 ```bash
 # Debug(테스트): 기존 build/ 디렉터리, WITH_TESTS, FAIL_ON_WARNINGS
 cd build && make -j3 db_memtable_test prefix_test inlineskiplist_test
@@ -289,7 +297,7 @@ git clang-format   # clang-format 23.1.5가 ~/.local/bin에 있음
 9. HEAD/UPSTREAM과 SKIPLIST를 비교할 때는 bucket 높이(`--hash_height`)를 SKIPLIST와 같은 12로 맞췄는지 확인한다.
 
 ## 7. 남은 일 (우선순위 순)
-1. **회귀 테스트 묶음 재실행**: 9d92aecc1, 2561b92b7 이후 db_test, db_iterator_test, db_bloom_filter_test, db_tailing_iter_test, perf_context_test, options_test를 아직 돌리지 않았다(3커밋 시점에는 모두 통과).
+1. **회귀 테스트 묶음 재실행**: 42ac47a08, 1888cce21 이후 db_test, db_iterator_test, db_bloom_filter_test, db_tailing_iter_test, perf_context_test, options_test를 아직 돌리지 않았다(3커밋 시점에는 모두 통과).
 2. **서버에서 3절 전체 재측정** 후 이 문서의 표 갱신.
 3. **읽기 측정**: range scan(`--scan_seconds`, 세 번째 카드)과 점 조회(`--get_seconds`, 네 번째 카드, 3.9절)를 넣었다. 남은 것은 SST까지 내려간 상태(flush 후)의 읽기와 여러 스레드 동시 읽기다. 시나리오 2의 "prefix 그룹 분석 쿼리"와 "랜덤 점/범위 조회"를 op_trade_bench에 추가해야 한다(현재는 쓰기와 flush만).
 4. **실시간 지표**: op_trade_bench `--metrics_port`와 웹 대시보드(5.2절)로 구현했다. 남은 것은 Prometheus/Grafana 연동(선택)이다. 원래 설계: op_trade_bench에 `--metrics_port`로 `/metrics` 노출(RocksDB `EventListener`의 `OnFlushBegin/OnFlushCompleted`로 flush 시간, Put 카운터와 지연, memtable 크기, write stall, `/proc/self` 기반 CPU와 RSS), `monitoring/`에 docker compose(Prometheus 1초 수집, Grafana 대시보드). flush를 이벤트 단위로 보여주려면 Spring이 stdout을 받아 SSE로 미는 방식이 더 맞다.
@@ -302,12 +310,12 @@ git clang-format   # clang-format 23.1.5가 ~/.local/bin에 있음
 ## 8. 서버 이전 체크리스트
 서버 경로: RocksDB 브랜치 `~/rocksdb/rocksdb_hash`, 이 저장소 `~/rocksdb/rocksdb_hash_demo`, TPC-E `~/tpc-e`, JDK 21 `~/java21`.
 
-- [x] `~/rocksdb/rocksdb_hash` 브랜치 이동 (`hash_skiplist_improvements`, 끝 2561b92b7).
+- [x] `~/rocksdb/rocksdb_hash` 브랜치 이동 (`hash_skiplist_improvements`, 끝 1888cce21).
 - [x] `~/rocksdb/rocksdb_hash_demo` 이동(이 저장소).
 - [x] TPC-E 데이터: `~/tpc-e/flat_out` (Trade.txt 28,664,881행 확인).
 - [x] 경로 하드코딩 제거.
   - 실험 스크립트는 바이너리를 스크립트 위치 기준으로 찾는다(`OTB_BIN`으로 덮어쓰기 가능).
-  - 빌드 스크립트의 `ROCKSDB_ROOT` 기본값은 `$HOME/rocksdb/rocksdb_hash`다.
+  - 빌드 스크립트의 `ROCKSDB_ROOT` 기본값은 submodule `rocksdb/`다(1.1절).
   - `op_trade_bench`의 기본 입력은 실행 시 `$TPCE_DIR/flat_out/Trade.txt`로 정해진다(`TPCE_DIR` 기본값 `$HOME/tpc-e`).
 - [ ] RocksDB 빌드: `build/`(Debug, 테스트)와 `build-rel/`(Release 공유 라이브러리) 모두 없음. 5.4절 참고. 서버는 RAM이 넉넉해 `-j`를 크게 잡아도 된다.
 - [ ] 도구: g++ 14.3, cmake 3.31, docker, python3 있음. JDK 21은 `~/java21`(5.2절).

@@ -1,0 +1,4 @@
+[submodule "rocksdb"]
+	path = rocksdb
+	url = https://github.com/psmsq4/rocksdb_hash.git
+	branch = hash_skiplist_improvements

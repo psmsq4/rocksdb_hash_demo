@@ -20,12 +20,12 @@ op_trade_bench/build.sh
 
 | 이름 | 커밋 | 내용 |
 |---|---|---|
-| step1 | efcdab406 | bucket을 InlineSkipList로 교체 |
-| step2 | fd1587399 | + 동시 쓰기 |
-| head | 9d92aecc1 | + total-order iterator, prefix_list_ 최소 높이 (메모 이전) |
-| head_noprefix | 9d92aecc1 변형 | AddPrefix 제거. **쓰기 시간 측정 전용** (iterator/flush 결과가 틀림) |
-| head_memo | 2561b92b7 | + bucket별 prefix 메모 (현재 브랜치 끝) |
-| head_single | 2561b92b7 + variants | 되돌린 "단일 prefix bucket 비교 생략" 변형 |
+| step1 | 91549bab9 | bucket을 InlineSkipList로 교체 |
+| step2 | 4f8df92bc | + 동시 쓰기 |
+| head | 42ac47a08 | + total-order iterator, prefix_list_ 최소 높이 (메모 이전) |
+| head_noprefix | 42ac47a08 변형 | AddPrefix 제거. **쓰기 시간 측정 전용** (iterator/flush 결과가 틀림) |
+| head_memo | 1888cce21 | + bucket별 prefix 메모 (현재 브랜치 끝) |
+| head_single | 1888cce21 + variants | 되돌린 "단일 prefix bucket 비교 생략" 변형 |
 
 UPSTREAM은 `op_trade_bench`에 내장(`upstream_hash_skiplist_rep.cc`)되어 있어 어느 라이브러리로든 실행됩니다.
 
@@ -57,6 +57,6 @@ python3 experiments/scripts/summarize_keyfmt.py experiments/results/keyfmt.txt
 
 ## variants
 
-`hash_skiplist_rep_single_prefix.cc`: 2561b92b7 위에 "bucket에 prefix가 하나뿐이면 iterator가
+`hash_skiplist_rep_single_prefix.cc`: 1888cce21 위에 "bucket에 prefix가 하나뿐이면 iterator가
 entry마다 prefix를 비교하지 않는" 최적화를 더한 `memtable/hash_skiplist_rep.cc`.
 테스트와 mutation 테스트는 통과했지만 flush·쓰기 모두 측정상 이득이 없어 커밋하지 않았습니다.

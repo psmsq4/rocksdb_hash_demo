@@ -1496,4 +1496,96 @@ const app = {
   },
 };
 
+// ---------- HEAD commit log dialog ----------
+const commits = {
+  dialog: document.getElementById("commits"),
+  loaded: false,
+
+  init() {
+    const opener = document.querySelector(".lineup-link");
+    if (!opener || !this.dialog) return;
+    opener.addEventListener("click", () => this.open());
+    opener.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        this.open();
+      }
+    });
+    this.dialog.querySelector(".modal-close").addEventListener("click", () => this.dialog.close());
+    // Click on the backdrop closes it.
+    this.dialog.addEventListener("click", (e) => {
+      if (e.target === this.dialog) this.dialog.close();
+    });
+  },
+
+  async open() {
+    this.dialog.showModal();
+    if (this.loaded) return;
+    const body = this.dialog.querySelector(".cm-body");
+    try {
+      const res = await fetch("rocksdb-commits.json");
+      if (!res.ok) throw new Error(res.status);
+      this.render(await res.json());
+      this.loaded = true;
+    } catch (e) {
+      body.replaceChildren(el("p", { class: "cm-loading", text: "커밋 목록을 불러오지 못했습니다." }));
+    }
+  },
+
+  render(log) {
+    const b = log.base;
+    this.dialog.querySelector(".cm-sub").replaceChildren(
+      el("code", { text: log.branch }),
+      ` · base ${b.hash} (${b.note}, ${b.date}) · 커밋 ${log.commits.length}개 · 파일 ${log.total.files}개 `,
+      el("span", { class: "cm-add", text: `+${nf0.format(log.total.add)}` }),
+      " ",
+      el("span", { class: "cm-del", text: `−${nf0.format(log.total.del)}` }),
+    );
+    const list = el("ol", { class: "cm-list" });
+    log.commits.forEach((c, i) => {
+      const add = c.files.reduce((n, f) => n + f[1], 0);
+      const del = c.files.reduce((n, f) => n + f[2], 0);
+      const sections = c.sections.map((s) => {
+        const content = [];
+        if (s.items) content.push(el("ul", { class: "cm-items" }, ...s.items.map((t) => el("li", { text: t }))));
+        if (s.metrics) {
+          content.push(el("div", { class: "cm-metrics" }, ...s.metrics.map(([what, before, after]) =>
+            el("div", { class: "cm-metric" },
+              el("span", { class: "cm-metric-what", text: what }),
+              el("span", { class: "cm-metric-val" },
+                el("span", { class: "cm-before", text: before }), " → ",
+                el("strong", { text: after }))))));
+        }
+        if (s.tests) {
+          content.push(el("div", { class: "cm-tests" }, ...s.tests.map((t) =>
+            el("span", { class: t.startsWith("+ ") ? "cm-test cm-test-new" : "cm-test", text: t.replace(/^\+ /, "새 ") }))));
+        }
+        if (s.note) content.push(el("p", { class: "cm-note", text: s.note }));
+        return el("div", { class: "cm-sec" }, el("span", { class: "cm-label", text: s.label }), el("div", {}, ...content));
+      });
+      const files = el("details", { class: "cm-files" },
+        el("summary", { text: `변경 파일 ${c.files.length}개` }),
+        el("ul", {}, ...c.files.map(([path, a, d]) => el("li", {},
+          el("code", { text: path }),
+          el("span", { class: "cm-add", text: `+${a}` }),
+          el("span", { class: "cm-del", text: d ? `−${d}` : "" })))));
+      list.append(el("li", { class: "cm-commit" },
+        el("span", { class: "cm-no", text: String(i + 1) }),
+        el("div", { class: "cm-main" },
+          el("h3", { class: "cm-title", text: c.title }),
+          el("p", { class: "cm-orig", text: c.original }),
+          el("div", { class: "cm-meta" },
+            el("a", { class: "cm-hash", href: `${log.repo}/commit/${c.hash}`, target: "_blank", rel: "noopener", text: c.hash.slice(0, 9) }),
+            el("span", { text: c.date }),
+            el("span", { class: "cm-add", text: `+${add}` }),
+            el("span", { class: "cm-del", text: `−${del}` }),
+            el("span", { class: "cm-badge", text: c.badge })),
+          ...sections,
+          files)));
+    });
+    this.dialog.querySelector(".cm-body").replaceChildren(list);
+  },
+};
+commits.init();
+
 app.start();

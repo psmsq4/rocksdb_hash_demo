@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Regenerates upstream_hash_skiplist_rep.cc from a RocksDB checkout.
-#   ROCKSDB_ROOT    checkout that contains the upstream commit (default: ~/rocksdb/rocksdb_hash)
+#   ROCKSDB_ROOT    checkout that contains the upstream commit (default: the
+#                   rocksdb submodule of this repository)
 #   UPSTREAM_COMMIT commit to copy from (default: e591f5f1a)
 set -euo pipefail
 
-root="${ROCKSDB_ROOT:-$HOME/rocksdb/rocksdb_hash}"
-commit="${UPSTREAM_COMMIT:-e591f5f1a}"
 here="$(cd "$(dirname "$0")" && pwd)"
+root="${ROCKSDB_ROOT:-$(cd "$here/../rocksdb" && pwd)}"
+commit="${UPSTREAM_COMMIT:-e591f5f1a}"
 
 {
   cat <<EOF

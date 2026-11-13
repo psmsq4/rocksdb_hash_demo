@@ -3,7 +3,7 @@ server:
   port: 8181
 
 demo:
-  # Built by op_trade_bench/build.sh against ~/rocksdb/rocksdb_hash/build-rel.
+  # Built by op_trade_bench/build.sh against rocksdb/build-rel (the submodule).
   bench-binary: ${user.dir}/op_trade_bench/out/op_trade_bench
   # Databases and final metric dumps of each run.
   work-dir: /tmp/otb_work/web

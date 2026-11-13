@@ -3,24 +3,24 @@
 # branch into $WORK/libs/<name>/librocksdb.so.11, so that op_trade_bench can
 # load any of them with LD_LIBRARY_PATH (its RUNPATH is overridden).
 #
-#   ROCKSDB_ROOT  checkout with the branch (default: ~/rocksdb/rocksdb_hash)
+#   ROCKSDB_ROOT  checkout with the branch (default: the rocksdb submodule)
 #   WORK          scratch directory (default: /tmp/otb_work)
 #   JOBS          make -j (default: 3; more needs RAM, about 1GB per job)
 #
-# Names: step1 efcdab406, step2 fd1587399, head 9d92aecc1 (before the memo),
+# Names: step1 91549bab9, step2 4f8df92bc, head 42ac47a08 (before the memo),
 # head_noprefix (head without AddPrefix, timing only: iterators and flush are
-# wrong), head_memo 2561b92b7, head_single (head_memo plus the reverted
+# wrong), head_memo 1888cce21, head_single (head_memo plus the reverted
 # single-prefix variant in ../variants).
 set -euo pipefail
-root="${ROCKSDB_ROOT:-$HOME/rocksdb/rocksdb_hash}"
+here="$(cd "$(dirname "$0")" && pwd)"
+root="${ROCKSDB_ROOT:-$(cd "$here/../../rocksdb" && pwd)}"
 work="${WORK:-/tmp/otb_work}"
 jobs="${JOBS:-3}"
-here="$(cd "$(dirname "$0")" && pwd)"
 wt="$work/wt"
 libs="$work/libs"
 
 if [[ ! -d "$wt" ]]; then
-  git -C "$root" worktree add --detach "$wt" efcdab406
+  git -C "$root" worktree add --detach "$wt" 91549bab9
 fi
 mkdir -p "$wt/build-rel" "$libs"
 if [[ ! -f "$wt/build-rel/Makefile" ]]; then
@@ -42,13 +42,13 @@ checkout() {
   git -C "$wt" checkout -q "$1"
 }
 
-checkout efcdab406
+checkout 91549bab9
 build_and_copy step1
 
-checkout fd1587399
+checkout 4f8df92bc
 build_and_copy step2
 
-checkout 9d92aecc1
+checkout 42ac47a08
 build_and_copy head
 
 sed -i 's|^  AddPrefix(transformed, /\*concurrently=\*/false);|  // AddPrefix removed for measurement|' \
@@ -56,9 +56,9 @@ sed -i 's|^  AddPrefix(transformed, /\*concurrently=\*/false);|  // AddPrefix re
 grep -q "AddPrefix removed for measurement" "$wt/memtable/hash_skiplist_rep.cc"
 build_and_copy head_noprefix
 
-checkout 2561b92b7
+checkout 1888cce21
 build_and_copy head_memo
 
 cp "$here/../variants/hash_skiplist_rep_single_prefix.cc" "$wt/memtable/hash_skiplist_rep.cc"
 build_and_copy head_single
-checkout 2561b92b7
+checkout 1888cce21

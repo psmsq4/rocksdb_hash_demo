@@ -1,0 +1,165 @@
+{
+  "repo": "https://github.com/psmsq4/rocksdb_hash",
+  "branch": "hash_skiplist_improvements",
+  "base": { "hash": "e591f5f1a", "date": "2026-11-06", "note": "facebook/rocksdb main" },
+  "total": { "files": 10, "add": 784, "del": 29 },
+  "commits": [
+    {
+      "hash": "91549bab917a77a169f7275e6ebe54af71513913",
+      "date": "2026-11-08",
+      "title": "bucket을 InlineSkipList로 바꿈",
+      "original": "Use InlineSkipList for HashSkipListRep buckets",
+      "badge": "entry마다 포인터 1개, 비교마다 간접 참조 1번 절약",
+      "sections": [
+        { "label": "문제", "items": [
+          "bucket이 SkipList라서, 노드가 MemTable이 따로 할당한 entry를 포인터로 가리킨다."
+        ]},
+        { "label": "변경", "items": [
+          "bucket을 InlineSkipList로 바꿨다. entry가 노드 안에 들어가므로 entry마다 포인터 하나, key를 비교할 때마다 간접 참조 한 번이 줄어든다.",
+          "InlineSkipList의 동시 삽입 기능도 쓸 수 있게 된다(다음 커밋)."
+        ]},
+        { "label": "구현", "items": [
+          "InlineSkipList는 entry를 노드로 할당해야 하는데, 어느 bucket인지는 MemTable이 key를 인코딩한 뒤에야 안다.",
+          "노드 형태는 모든 bucket이 공유하는 allocator와 높이 설정에만 달려 있다. 그래서 Allocate()는 전용 리스트에서 노드를 받고, Insert()가 그 노드를 해당 bucket에 연결한다.",
+          "entry를 복사하지 않으므로 MemTable이 써 둔 key별 checksum까지 그대로 남는다."
+        ]},
+        { "label": "남은 것", "items": [
+          "GetIterator()는 여전히 모든 bucket을 임시 리스트로 합친다. 이 리스트는 이제 entry 포인터를 담는 SkipList다."
+        ]},
+        { "label": "검증", "tests": [
+          "+ DBMemTableTest.HashSkipListProtectionBytes", "prefix_test", "db_memtable_test", "inlineskiplist_test", "db_test",
+          "db_iterator_test", "db_bloom_filter_test", "db_tailing_iter_test", "perf_context_test", "options_test"
+        ]}
+      ],
+      "files": [
+        ["memtable/hash_skiplist_rep.cc", 37, 14],
+        ["db/db_memtable_test.cc", 30, 0],
+        ["unreleased_history/performance_improvements/hash_skiplist_inline_buckets.md", 1, 0]
+      ]
+    },
+    {
+      "hash": "4f8df92bceca3736495d49b6d95f6646659ce13d",
+      "date": "2026-11-08",
+      "title": "동시 쓰기 지원",
+      "original": "Support concurrent writes in HashSkipListRep",
+      "badge": "allow_concurrent_memtable_write 사용 가능",
+      "sections": [
+        { "label": "변경", "items": [
+          "InsertConcurrently()를 InlineSkipList::InsertConcurrently()로 구현했다.",
+          "HashSkipListRepFactory가 동시 삽입을 지원한다고 알려, memtable이 allow_concurrent_memtable_write를 받아들인다."
+        ]},
+        { "label": "구현", "items": [
+          "bucket 밖에서 스레드가 공유하는 것은 bucket 배열뿐이다.",
+          "두 스레드가 같은 빈 bucket을 동시에 볼 수 있으므로, bucket을 compare-and-swap으로 설치한다. 진 쪽은 이긴 쪽의 bucket을 쓴다.",
+          "진 쪽이 만든 bucket은 arena에 쓰이지 않은 채 남는다. 경합이 날 때만 생긴다."
+        ]},
+        { "label": "검증", "tests": [
+          "+ DBMemTableTest.HashSkipListConcurrentInsert", "db_memtable_test", "prefix_test", "DBTest *Concurrent*"
+        ], "note": "새 테스트는 bucket을 CAS 대신 일반 store로 설치하면 30번 안에 실패한다." }
+      ],
+      "files": [
+        ["db/db_memtable_test.cc", 76, 1],
+        ["memtable/hash_skiplist_rep.cc", 20, 3],
+        ["unreleased_history/new_features/hash_skiplist_concurrent_writes.md", 1, 0]
+      ]
+    },
+    {
+      "hash": "5384b94220b91cadbf5817415693fd0cd7d897ca",
+      "date": "2026-11-08",
+      "title": "복사 없이 key 순서로 순회",
+      "original": "Iterate HashSkipListRep in total order without copying",
+      "badge": "iterator 생성이 O(memtable 크기) → 복사 없음",
+      "sections": [
+        { "label": "문제", "items": [
+          "total-order 순회와 flush가 쓰는 GetIterator()는 iterator를 만들 때마다 모든 bucket의 모든 entry를 임시 skiplist로 복사했다.",
+          "그래서 iterator를 만들거나 Seek하는 시간이 memtable 크기에 비례했다."
+        ]},
+        { "label": "변경", "items": [
+          "memtable의 모든 prefix를 user comparator 순서로 정렬해 InlineSkipList prefix_list_에 둔다.",
+          "PrefixOrderedIterator가 prefix_list_를 따라가며, prefix마다 그 bucket 안의 해당 범위를 읽는다.",
+          "hash 충돌로 한 bucket에 prefix가 여럿 있을 수 있으므로, bucket entry의 prefix가 바뀌는 곳에서 다음 prefix로 넘어간다."
+        ]},
+        { "label": "전제와 범위", "items": [
+          "options.h의 prefix_extractor 계약에 기댄다. 같은 prefix의 key는 연속해 있고, prefix는 순서를 보존한다.",
+          "prefix가 그룹의 key보다 앞에 정렬될 필요는 없다. 그룹의 첫 entry와 끝 entry를 bucket에서 prefix가 바뀌는 지점으로 찾기 때문이다(새로 추가한 SeekToFirstNotMatching, SeekToLastMatching). 그래서 ReverseBytewiseComparator에서도 동작한다.",
+          "prefix extractor 도메인 밖의 Seek 대상은 이웃 그룹의 첫 key를 확인해 처리한다.",
+          "user-defined timestamp는 지원하지 않는다. prefix에 timestamp가 없기 때문이다(debug 빌드에서 assert)."
+        ]},
+        { "label": "API", "items": [
+          "prefix_list_가 user comparator를 써야 하므로 MemTableRep::KeyComparator에 user_comparator()를 추가했다. MemTable의 KeyComparator가 이를 구현한다."
+        ]},
+        { "label": "비용", "items": [
+          "이제 삽입마다 prefix_list_에서 prefix를 찾고, 없으면 추가한다(5번째 커밋에서 줄임)."
+        ]},
+        { "label": "검증", "tests": [
+          "+ DBMemTableHashSkipListTest.TotalOrderIterator", "+ InlineSkipTest.SeekByPredicate", "prefix_test", "db_memtable_test",
+          "inlineskiplist_test", "db_test", "db_iterator_test", "db_bloom_filter_test", "db_tailing_iter_test", "perf_context_test", "options_test"
+        ], "note": "TotalOrderIterator는 bytewise와 reverse bytewise, memtable과 flush된 SST를 모두 확인한다." }
+      ],
+      "files": [
+        ["memtable/hash_skiplist_rep.cc", 372, 30],
+        ["db/db_memtable_test.cc", 117, 0],
+        ["memtable/inlineskiplist.h", 53, 0],
+        ["memtable/inlineskiplist_test.cc", 35, 0],
+        ["include/rocksdb/memtablerep.h", 5, 0],
+        ["db/memtable.h", 3, 0],
+        ["unreleased_history/performance_improvements/hash_skiplist_total_order_iterator.md", 1, 0],
+        ["unreleased_history/public_api_changes/memtablerep_key_comparator_user_comparator.md", 1, 0]
+      ]
+    },
+    {
+      "hash": "42ac47a081351b807e4a964aecb8d422cc758752",
+      "date": "2026-11-09",
+      "title": "prefix_list_ 최소 높이를 12로",
+      "original": "Give HashSkipListRep's prefix list its own minimum height",
+      "badge": "삽입 320초 → 3.8초",
+      "sections": [
+        { "label": "문제", "items": [
+          "prefix_list_를 skiplist_height로 만들었다. 이 값은 기본 4이고, bucket 하나의 key 수에 맞춘 높이다.",
+          "prefix_list_는 memtable의 모든 prefix를 담는다. prefix가 많으면 낮은 높이 제한 때문에 삽입과 Seek가 맨 위 레벨을 거의 선형으로 걷는다."
+        ]},
+        { "label": "변경", "items": [
+          "prefix_list_ 높이를 최소 12로 한다. skiplist memtable의 기본값과 같다."
+        ]},
+        { "label": "측정", "metrics": [
+          ["삽입 (key 100만, prefix당 key 1개)", "320초", "3.8초"],
+          ["total-order Seek() + Next() 10번", "408µs", "10µs"]
+        ]}
+      ],
+      "files": [
+        ["memtable/hash_skiplist_rep.cc", 9, 1]
+      ]
+    },
+    {
+      "hash": "1888cce21666bd842a3375ac2cf16f4e73ac5478",
+      "date": "2026-11-11",
+      "title": "삽입 때 prefix_list_ 조회 건너뛰기",
+      "original": "Skip the prefix list lookup on HashSkipListRep inserts",
+      "badge": "upstream 대비 -25~31% → -2%",
+      "sections": [
+        { "label": "문제", "items": [
+          "모든 삽입이 prefix_list_에서 자기 prefix를 찾았다. 그런데 거의 모든 삽입은 이미 있는 prefix다.",
+          "TPC-E 거래를 종목으로 key를 만들면(prefix 약 3,400개) 단일 스레드 삽입이 upstream보다 25~31% 느렸다. 조회를 빼면 upstream 속도였다."
+        ]},
+        { "label": "변경", "items": [
+          "bucket마다 그 bucket의 key로 마지막에 추가한 prefix의 prefix_list_ entry(known_prefix)를 둔다.",
+          "key의 prefix가 그것과 다를 때만 prefix_list_를 찾는다. 대부분의 bucket은 prefix가 하나라서, 보통은 비교 한 번으로 끝난다."
+        ]},
+        { "label": "동시성", "items": [
+          "prefix가 prefix_list_에 들어간 뒤에 known_prefix를 release로 저장하고 acquire로 읽는다.",
+          "그래서 iterator가 bucket에서 key를 찾으면 prefix_list_에서도 그 prefix를 반드시 찾는다."
+        ]},
+        { "label": "측정", "metrics": [
+          ["512MB memtable, 거래 150만, WAL 끔, 7회 교차 중앙값", "upstream 409K/s", "401K/s"]
+        ], "note": "prefix_list_를 아예 거치지 않는 빌드는 400K/s." },
+        { "label": "검증", "tests": [
+          "DBMemTableHashSkipListTest.TotalOrderIterator (bucket 4개와 1,000개)", "db_memtable_test", "prefix_test"
+        ], "note": "bucket 4개는 prefix가 bucket을 나눠 쓰는 경우, 1,000개는 대부분 bucket에 prefix가 하나인 경우다." }
+      ],
+      "files": [
+        ["memtable/hash_skiplist_rep.cc", 63, 24],
+        ["db/db_memtable_test.cc", 15, 11]
+      ]
+    }
+  ]
+}
