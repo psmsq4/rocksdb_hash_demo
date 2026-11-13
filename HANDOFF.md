@@ -37,7 +37,7 @@ RocksDB `HashSkipListRep`(prefix hash memtable)의 두 결격 사유를 없앴�
 ### 1.1 저장소 구성 (submodule)
 - 이 저장소가 상위 저장소이고, RocksDB fork는 `rocksdb/`에 git submodule로 들어 있다(`.gitmodules`, branch = `hash_skiplist_improvements`). 상위 저장소는 RocksDB의 특정 커밋을 가리키므로 측정 결과와 RocksDB 버전이 함께 기록된다.
 - 처음 받기: `git clone --recursive https://github.com/psmsq4/rocksdb_hash_demo.git` (이미 받았으면 `git submodule update --init`).
-- RocksDB를 고칠 때: `rocksdb/`에서 커밋하고 push한 뒤, 상위 저장소에서 `git add rocksdb`로 가리키는 커밋을 갱신해 커밋한다. RocksDB 커밋 메시지에는 `Co-Authored-By`, `Claude-Session` 줄을 넣지 않는다.
+- RocksDB를 고칠 때: `rocksdb/`에서 커밋하고 push한 뒤, 상위 저장소에서 `git add rocksdb`로 가리키는 커밋을 갱신해 커밋한다. 두 저장소 모두 커밋 메시지에 `Co-Authored-By`, `Claude-Session` 줄을 넣지 않는다(2026-11-13에 기존 이력에서도 지움, 해시가 바뀌었음).
 - 빌드 스크립트(`op_trade_bench/build.sh`, `gen_upstream.sh`, `experiments/scripts/build_libs.sh`)의 `ROCKSDB_ROOT` 기본값은 이 submodule이다. `build-rel/`은 submodule의 `.git/info/exclude`로 무시한다(새로 받은 곳에서도 상태를 깨끗하게 두려면 같은 줄을 넣는다).
 - 서버에서는 원래 `~/rocksdb/rocksdb_hash` checkout을 `rocksdb/`로 옮겨 그대로 submodule로 등록했다. `/tmp/otb_work/wt` worktree가 연결돼 있어 `git submodule absorbgitdirs`는 하지 않았고, `.git`이 `rocksdb/` 안에 그대로 있다.
 

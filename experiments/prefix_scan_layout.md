@@ -1,6 +1,6 @@
 # prefix scan에서 UPSTREAM이 느린 이유: Arena 배치
 
-작성: 2026-11-13. 측정: i9-12900K 서버, `op_trade_bench`(main `30d717c` 이후 작업본), RocksDB `hash_skiplist_improvements`(`1888cce21`).
+작성: 2026-11-13. 측정: i9-12900K 서버, `op_trade_bench`(main `557727c` 이후 작업본), RocksDB `hash_skiplist_improvements`(`1888cce21`).
 
 ## 요약
 
