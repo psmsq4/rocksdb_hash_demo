@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>아키텍처 | HASH(Rocksdb)</title>
+  <link rel="preload" href="fonts/meslo-lgs-dz-Regular.ttf" as="font" type="font/ttf" crossorigin>
+  <link rel="stylesheet" href="app.css">
+  <link rel="stylesheet" href="arch.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-wrap">
+      <nav class="nav" aria-label="주 메뉴">
+        <button class="nav-toggle" type="button" aria-label="메뉴 열기" aria-haspopup="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"></path></svg>
+        </button>
+        <div class="nav-drawer">
+          <a class="nav-item" href="./">
+            <span class="nav-title">벤치마크</span>
+            <span class="nav-desc">HEAD, UPSTREAM, SKIPLIST를 같은 작업으로 동시에 측정</span>
+          </a>
+          <a class="nav-item" href="architecture.html" aria-current="page">
+            <span class="nav-title">아키텍처</span>
+            <span class="nav-desc">UPSTREAM과 HEAD의 HashSkipList 구조 비교</span>
+          </a>
+        </div>
+        <div class="nav-scrim" aria-hidden="true"></div>
+      </nav>
+      <h1 class="brand">HASH(Rocksdb)</h1>
+    </div>
+    <p class="author"><span>[돌디비] 단국대학교</span> <span>소프트웨어학과 21학번 신승호</span></p>
+  </header>
+
+  <main class="page arch-page">
+    <section class="arch-intro">
+      <h2 class="arch-title">HashSkipListRep 안에서 일어나는 일</h2>
+      <p class="arch-lead">
+        같은 KV를 두 구현에 넣고 flush할 때의 경로를 나란히 봅니다. 그림의 key는
+        <code>trade_종목|t_id</code>에서 앞의 <code>trade_</code>를 생략했습니다.
+      </p>
+    </section>
+
+    <section class="player" aria-label="재생 제어">
+      <div class="scenes" role="tablist" aria-label="장면"></div>
+      <div class="controls">
+        <button type="button" class="ctl" data-act="restart" aria-label="처음부터">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.4-5.7M4 4v5h5"></path></svg>
+        </button>
+        <button type="button" class="ctl" data-act="prev" aria-label="이전 단계">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"></path></svg>
+        </button>
+        <button type="button" class="ctl ctl-play" data-act="play" aria-label="일시정지">
+          <svg class="i-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14"></path></svg>
+          <svg class="i-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5l12 7-12 7z"></path></svg>
+        </button>
+        <button type="button" class="ctl" data-act="next" aria-label="다음 단계">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>
+        </button>
+        <div class="speed" role="group" aria-label="속도">
+          <button type="button" data-speed="0.5">0.5×</button>
+          <button type="button" data-speed="1" aria-pressed="true">1×</button>
+          <button type="button" data-speed="2">2×</button>
+        </div>
+        <span class="stepno" aria-live="polite"></span>
+      </div>
+      <div class="timeline" aria-hidden="true"></div>
+    </section>
+
+    <section class="legend" aria-label="색 설명">
+      <span class="lg lg-head">HEAD 경로</span>
+      <span class="lg lg-up">UPSTREAM 경로</span>
+      <span class="lg lg-hit">적중, 그대로 사용</span>
+      <span class="lg lg-new">miss, 새로 생성</span>
+      <span class="lg lg-copy">복사</span>
+    </section>
+
+    <section class="duel">
+      <article class="side side-head" data-side="head">
+        <header class="side-head-row">
+          <h3 class="side-title">HEAD</h3>
+          <span class="side-sub">InlineSkipList bucket, 정렬된 prefix_list_, bucket마다 known_prefix</span>
+        </header>
+        <div class="stage"><svg class="diagram" viewBox="0 0 640 520" role="img" aria-label="HEAD HashSkipListRep 그림"></svg></div>
+        <div class="caption" aria-live="polite">
+          <p class="cap-title"></p>
+          <p class="cap-body"></p>
+          <code class="cap-code"></code>
+        </div>
+      </article>
+
+      <article class="side side-up" data-side="up">
+        <header class="side-head-row">
+          <h3 class="side-title">UPSTREAM</h3>
+          <span class="side-sub">SkipList bucket, prefix 목록 없음, flush 때 전체 복사</span>
+        </header>
+        <div class="stage"><svg class="diagram" viewBox="0 0 640 520" role="img" aria-label="UPSTREAM HashSkipListRep 그림"></svg></div>
+        <div class="caption" aria-live="polite">
+          <p class="cap-title"></p>
+          <p class="cap-body"></p>
+          <code class="cap-code"></code>
+        </div>
+      </article>
+    </section>
+  </main>
+
+  <script src="arch.js"></script>
+</body>
+</html>

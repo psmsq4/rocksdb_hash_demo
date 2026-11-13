@@ -10,7 +10,25 @@
 </head>
 <body>
   <header class="topbar">
-    <h1 class="brand">HASH(Rocksdb)</h1>
+    <div class="brand-wrap">
+      <nav class="nav" aria-label="주 메뉴">
+        <button class="nav-toggle" type="button" aria-label="메뉴 열기" aria-haspopup="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"></path></svg>
+        </button>
+        <div class="nav-drawer">
+          <a class="nav-item" href="./" aria-current="page">
+            <span class="nav-title">벤치마크</span>
+            <span class="nav-desc">HEAD, UPSTREAM, SKIPLIST를 같은 작업으로 동시에 측정</span>
+          </a>
+          <a class="nav-item" href="architecture.html">
+            <span class="nav-title">아키텍처</span>
+            <span class="nav-desc">UPSTREAM과 HEAD의 HashSkipList 구조 비교</span>
+          </a>
+        </div>
+        <div class="nav-scrim" aria-hidden="true"></div>
+      </nav>
+      <h1 class="brand">HASH(Rocksdb)</h1>
+    </div>
     <p class="author"><span>[돌디비] 단국대학교</span> <span>소프트웨어학과 21학번 신승호</span></p>
   </header>
 
@@ -67,6 +85,7 @@
           <p class="run-note" hidden></p>
           <p class="notice" hidden></p>
           <section class="compare" aria-label="결과 비교"></section>
+          <section class="verify" aria-label="정확도"></section>
           <section class="charts" aria-label="실시간 지표"></section>
           <section class="hw" aria-label="하드웨어 카운터"></section>
           <section class="stats" aria-label="RocksDB statistics"></section>
@@ -162,6 +181,15 @@
           </div>
           <button type="button" class="switch" role="switch" aria-checked="false"
                   aria-labelledby="set-wal-label" data-field="wal"><i></i><span></span></button>
+        </div>
+
+        <div class="field" data-kinds="flush write">
+          <div class="field-label">
+            <span id="set-verify-label">정확도 검증</span>
+            <span class="field-hint">끝나면 전량 flush 전후로 전체를 key 순서대로 읽어 내용 해시를 비교</span>
+          </div>
+          <button type="button" class="switch" role="switch" aria-checked="false"
+                  aria-labelledby="set-verify-label" data-field="verify"><i></i><span></span></button>
         </div>
 
         <div class="field">

@@ -24,10 +24,12 @@ import java.util.Map;
  * @param scanLength  entries each scan reads
  * @param getSeconds  seconds each of point lookups for written keys, missing keys
  *                    and unknown symbols after the load; 0 for none
+ * @param verify      hash every (key, value) in key order before and after a full
+ *                    flush, to show all memtables stored the same data
  */
 public record RunSettings(long kv, int memtableMb, String keyFormat, boolean preload, boolean wal,
                           int consumers, int hashHeight, boolean concurrent, int scanSeconds,
-                          int scanLength, int getSeconds) {
+                          int scanLength, int getSeconds, boolean verify) {
 
     public static final long KV_STEP = 100_000;
     public static final long KV_MIN = 100_000;
@@ -72,6 +74,12 @@ public record RunSettings(long kv, int memtableMb, String keyFormat, boolean pre
             // writes) becomes the slowest; 4 writers, 10M account keys, 512MB
             // took 30 s in all (26.7 s of writes).
             "multiWriterFactor", 0.6,
+            // Verification: two full reads (about 3.7M KVs/s) and a flush of
+            // what is still in the memtable (about 2.3M KVs/s, ~5,500 KVs
+            // per MB of memtable).
+            "verifyReadKvPerS", 3_700_000.0,
+            "flushKvPerS", 2_300_000.0,
+            "kvPerMemtableMb", 5_500.0,
             "overheadSeconds", 1.0);    // start, open, final flush
 
     /** Returns null when valid, otherwise what is wrong, for the user. */
@@ -133,6 +141,9 @@ public record RunSettings(long kv, int memtableMb, String keyFormat, boolean pre
         if (getSeconds > 0) {
             args.add("--get_seconds=" + getSeconds);
         }
+        if (verify) {
+            args.add("--verify");
+        }
         return args;
     }
 
@@ -147,7 +158,11 @@ public record RunSettings(long kv, int memtableMb, String keyFormat, boolean pre
         }
         // Prefix scans, then total-order scans, each for scanSeconds; then
         // three kinds of point lookups, each for getSeconds.
-        return kv / rate + RATES.get("overheadSeconds") + 2.0 * scanSeconds + 3.0 * getSeconds;
+        double verifySeconds = !verify ? 0
+                : 2.0 * kv / RATES.get("verifyReadKvPerS")
+                        + Math.min(kv, memtableMb * RATES.get("kvPerMemtableMb")) / RATES.get("flushKvPerS");
+        return kv / rate + RATES.get("overheadSeconds") + 2.0 * scanSeconds + 3.0 * getSeconds
+                + verifySeconds;
     }
 
     public static Map<String, Object> limits() {

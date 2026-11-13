@@ -1,0 +1,29 @@
+# op_trade_bench --verify on the server (2026-11-12). Same input to each
+# memtable, content hash = 64-bit FNV-1a over every (key length, key, value
+# length, value) read in key order, before the final flush and again from
+# the SST files after it.
+#
+# Raw SST files after one full flush of the same 1M trades (512MB, preload):
+#   HEAD     000008.sst 128,948,408 bytes sha256 262f4980c5cf143d...
+#   UPSTREAM 000008.sst 128,948,408 bytes sha256 0855745a1e6c4c36...
+#   SKIPLIST 000008.sst 128,948,408 bytes sha256 9bd82c75f3f6623a...
+#   HEAD vs SKIPLIST: 127,800 differing bytes, 31,935 runs of 4 bytes about
+#   4 KB apart (per-block checksums mixed with a per-file value) plus a few
+#   bytes of properties (DB identity, session identity). Data blocks match.
+#
+## 2M, 64MB, queue, auto flushes, --flush_at_end --verify
+HEAD     before 2,000,000 strictly-increasing 5fbdca3b5202d4d1 | after 2,000,000 strictly-increasing 5fbdca3b5202d4d1, 5 SST files, 257,969,005 bytes
+UPSTREAM before 2,000,000 strictly-increasing 5fbdca3b5202d4d1 | after 2,000,000 strictly-increasing 5fbdca3b5202d4d1, 5 SST files, 257,969,078 bytes
+SKIPLIST before 2,000,000 strictly-increasing 5fbdca3b5202d4d1 | after 2,000,000 strictly-increasing 5fbdca3b5202d4d1, 5 SST files, 257,927,213 bytes
+## 2M, 512MB, preload, 4 consumers, account key, --verify
+HEAD     before 2,000,000 strictly-increasing de9cb1a65871ffe1 | after 2,000,000 strictly-increasing de9cb1a65871ffe1, 1 SST file, 262,888,932 bytes
+UPSTREAM before 2,000,000 strictly-increasing de9cb1a65871ffe1 | after 2,000,000 strictly-increasing de9cb1a65871ffe1, 1 SST file, 262,888,932 bytes
+SKIPLIST before 2,000,000 strictly-increasing de9cb1a65871ffe1 | after 2,000,000 strictly-increasing de9cb1a65871ffe1, 1 SST file, 262,888,932 bytes
+## Dashboard flush card default (10M, 64MB, queue), three at once
+HEAD     10,000,000 75e19f8a94ce3bc9 = 75e19f8a94ce3bc9, 22 SST files, 1,289,530,383 bytes
+UPSTREAM 10,000,000 75e19f8a94ce3bc9 = 75e19f8a94ce3bc9, 24 SST files, 1,289,540,644 bytes
+SKIPLIST 10,000,000 75e19f8a94ce3bc9 = 75e19f8a94ce3bc9, 24 SST files, 1,289,531,795 bytes
+## Dashboard multi-thread card default (8M, 512MB, preload, 4 writers, account key), three at once
+HEAD     8,000,000 7e2d76fb9a1bf3dc = 7e2d76fb9a1bf3dc, 13 SST files, 1,050,486,892 bytes
+UPSTREAM 8,000,000 7e2d76fb9a1bf3dc = 7e2d76fb9a1bf3dc, 13 SST files, 1,050,483,558 bytes
+SKIPLIST 8,000,000 7e2d76fb9a1bf3dc = 7e2d76fb9a1bf3dc, 13 SST files, 1,050,478,115 bytes

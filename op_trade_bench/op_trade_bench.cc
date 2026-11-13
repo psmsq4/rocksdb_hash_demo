@@ -9,7 +9,13 @@
 //                  [--shuffle] [--key_format=symb_tid|symb_acct_tid]
 //                  [--progress_ms=N] [--metrics_port=N] [--metrics_dump=PATH]
 //                  [--print_samples=N] [--scan_seconds=S] [--scan_length=N]
-//                  [--get_seconds=S]
+//                  [--get_seconds=S] [--verify]
+//
+// --verify checks what was written: before the final flush it reads the whole
+// DB in key order and hashes every (key, value); then it flushes everything
+// and reads it again from the SST files. Both passes report the KV count,
+// whether keys strictly increase, and a 64-bit FNV-1a hash of the content,
+// which must match across memtables for the same input.
 //
 // --get_seconds runs point lookups (DB::Get) after the load and any scans,
 // S seconds each of: keys the run wrote (hit), keys inside a written symbol
@@ -61,6 +67,7 @@
 
 #include "rocksdb/db.h"
 #include "rocksdb/listener.h"
+#include "rocksdb/metadata.h"
 #include "rocksdb/memtablerep.h"
 #include "rocksdb/options.h"
 #include "rocksdb/slice_transform.h"
@@ -737,6 +744,7 @@ struct Args {
   uint64_t print_samples = 0;
   double scan_seconds = 0;     // per scan kind; 0: no scans
   double get_seconds = 0;      // per lookup kind; 0: no lookups
+  bool verify = false;         // hash the content before and after a full flush
   uint64_t scan_length = 100;  // entries read per scan
   int hash_height = 4;  // bucket skiplist height of HEAD and UPSTREAM
 };
@@ -782,6 +790,9 @@ void Usage(const char* prog) {
           "seconds\n"
           "                 of total-order scans, a new iterator per scan\n"
           "  --scan_length=N  entries read per scan (default 100)\n"
+          "  --verify       hash every (key, value) in key order before and after "
+          "flushing\n"
+          "                 everything, with the KV count and an order check\n"
           "  --get_seconds=S  after the load, S seconds each of Get for written "
           "keys,\n"
           "                 missing keys in written symbols, and unknown symbols\n"
@@ -889,6 +900,8 @@ bool ParseArgs(int argc, char** argv, Args* args) {
       args->print_samples = strtoull(v.c_str(), nullptr, 10);
     } else if (arg == "--disable_wal") {
       args->disable_wal = true;
+    } else if (arg == "--verify") {
+      args->verify = true;
     } else if (arg == "--flush_at_end") {
       args->flush_at_end = true;
     } else if (arg == "--preload") {
@@ -1020,6 +1033,9 @@ int main(int argc, char** argv) {
   std::atomic<uint64_t> get_mode_start{0};
   std::atomic<uint64_t> gets_done{0};
   std::atomic<uint64_t> get_ns_total{0};
+  // Verification progress: pass 1 reads before the flush, pass 2 after.
+  std::atomic<int> verify_pass{0};
+  std::atomic<uint64_t> verify_scanned{0};
 
   // 0 open, 1 preload, 2 load, 5 prefix scans, 6 total-order scans,
   // 3 final flush, 4 done
@@ -1089,6 +1105,14 @@ int main(int argc, char** argv) {
     Metric(&out, "otb_flush_seconds_total", flush_ms_sum / 1e3);
     Metric(&out, "otb_flush_last_ms", events.empty() ? 0 : events.back().ms);
     Metric(&out, "otb_final_flush_ms", final_flush_ms_live.load());
+    if (args.verify) {
+      const int pass = verify_pass.load();
+      const double done = args.limit == 0 ? 0
+          : std::min(1.0, static_cast<double>(verify_scanned.load()) / args.limit);
+      Metric(&out, "otb_verify_pass", pass);
+      Metric(&out, "otb_verify_progress",
+             pass == 0 ? (phase.load() == 4 ? 1.0 : 0.0) : (pass - 1 + done) / 2.0);
+    }
     if (args.get_seconds > 0) {
       const int mode = get_mode.load();
       double progress = gets_finished.load() ? 1.0 : 0.0;
@@ -1366,6 +1390,62 @@ int main(int argc, char** argv) {
     gets_finished = true;
   }
 
+  // Reads the whole DB in key order: KV count, strictly increasing keys, and
+  // a 64-bit FNV-1a hash over each key's length, key, value's length, value.
+  struct VerifyResult {
+    uint64_t count = 0;
+    uint64_t hash = 0;
+    bool sorted = true;
+    bool ok = true;
+    double seconds = 0;
+  };
+  auto verify_scan = [&](int pass) {
+    VerifyResult v;
+    verify_scanned = 0;
+    verify_pass = pass;
+    phase = 9 + pass;  // 10 before the flush, 11 after
+    const uint64_t start = NowNanos();
+    uint64_t h = 1469598103934665603ULL;
+    auto mix = [&h](const char* p, size_t n) {
+      for (size_t i = 0; i < n; ++i) {
+        h ^= static_cast<unsigned char>(p[i]);
+        h *= 1099511628211ULL;
+      }
+    };
+    auto mix_len = [&mix](uint64_t n) { mix(reinterpret_cast<const char*>(&n), sizeof(n)); };
+    ReadOptions ro;
+    ro.total_order_seek = true;
+    std::unique_ptr<ROCKSDB_NAMESPACE::Iterator> it(db->NewIterator(ro));
+    std::string prev;
+    for (it->SeekToFirst(); it->Valid(); it->Next()) {
+      const Slice k = it->key();
+      const Slice val = it->value();
+      if (v.count > 0 && Slice(prev).compare(k) >= 0) {
+        v.sorted = false;
+      }
+      prev.assign(k.data(), k.size());
+      mix_len(k.size());
+      mix(k.data(), k.size());
+      mix_len(val.size());
+      mix(val.data(), val.size());
+      if ((++v.count & 0xffff) == 0) {
+        verify_scanned = v.count;
+      }
+    }
+    v.ok = it->status().ok();
+    v.hash = h;
+    v.seconds = (NowNanos() - start) / 1e9;
+    verify_scanned = v.count;
+    return v;
+  };
+  VerifyResult verify_before;
+  VerifyResult verify_after;
+  uint64_t sst_files = 0;
+  uint64_t sst_bytes = 0;
+  if (args.verify) {
+    verify_before = verify_scan(1);
+  }
+
   // Times flushing everything still in memtables. With a write buffer large
   // enough to hold all KVs, this is the flush of exactly one memtable.
   double final_flush_ms = -1;
@@ -1379,6 +1459,25 @@ int main(int argc, char** argv) {
       fprintf(stderr, "Flush: %s\n", fs.ToString().c_str());
       return 1;
     }
+  }
+  if (args.verify) {
+    if (!args.flush_at_end) {
+      phase = 3;
+      Status fs = db->Flush(ROCKSDB_NAMESPACE::FlushOptions());
+      if (!fs.ok()) {
+        fprintf(stderr, "Flush: %s\n", fs.ToString().c_str());
+        return 1;
+      }
+    }
+    // Everything is in SST files now; read it back from them.
+    verify_after = verify_scan(2);
+    std::vector<ROCKSDB_NAMESPACE::LiveFileMetaData> files;
+    db->GetLiveFilesMetaData(&files);
+    sst_files = files.size();
+    for (const auto& f : files) {
+      sst_bytes += f.size;
+    }
+    verify_pass = 0;
   }
   phase = 4;
   if (!args.metrics_dump.empty()) {
@@ -1424,6 +1523,18 @@ int main(int argc, char** argv) {
   if (args.flush_at_end) {
     printf("final flush       : %.1f ms (DB::Flush after the load)\n",
            final_flush_ms);
+  }
+  if (args.verify) {
+    printf("verify before flush: %s KVs, keys %s, hash %016llx (%.2f s)\n",
+           WithCommas(verify_before.count).c_str(),
+           verify_before.sorted ? "strictly increasing" : "OUT OF ORDER",
+           static_cast<unsigned long long>(verify_before.hash), verify_before.seconds);
+    printf("verify after flush : %s KVs, keys %s, hash %016llx (%.2f s), %s SST files, "
+           "%s bytes\n",
+           WithCommas(verify_after.count).c_str(),
+           verify_after.sorted ? "strictly increasing" : "OUT OF ORDER",
+           static_cast<unsigned long long>(verify_after.hash), verify_after.seconds,
+           WithCommas(sst_files).c_str(), WithCommas(sst_bytes).c_str());
   }
   static const char* const kGetNames[3] = {"hit", "miss", "noprefix"};
   for (int mode = 0; mode < 3 && args.get_seconds > 0; ++mode) {
@@ -1482,6 +1593,18 @@ int main(int argc, char** argv) {
            name, r.latency.AverageNanos() / 1e3, name, r.latency.PercentileNanos(0.50) / 1e3,
            name, r.latency.PercentileNanos(0.99) / 1e3, name,
            static_cast<unsigned long long>(r.found));
+  }
+  if (args.verify) {
+    printf(" verify=1 verify_pre_count=%llu verify_pre_hash=%016llx verify_pre_sorted=%d "
+           "verify_count=%llu verify_hash=%016llx verify_sorted=%d verify_ok=%d "
+           "verify_pre_s=%.2f verify_s=%.2f verify_sst_files=%llu verify_sst_bytes=%llu",
+           static_cast<unsigned long long>(verify_before.count),
+           static_cast<unsigned long long>(verify_before.hash), verify_before.sorted ? 1 : 0,
+           static_cast<unsigned long long>(verify_after.count),
+           static_cast<unsigned long long>(verify_after.hash), verify_after.sorted ? 1 : 0,
+           verify_before.ok && verify_after.ok ? 1 : 0, verify_before.seconds,
+           verify_after.seconds, static_cast<unsigned long long>(sst_files),
+           static_cast<unsigned long long>(sst_bytes));
   }
   printf("\n");
   fflush(stdout);

@@ -174,6 +174,17 @@ HEAD는 초당 약 140만 건으로 일정, upstream은 크기가 클수록 느�
 - 없는 종목 조회는 hash 계열이 빈 bucket에서 바로 끝나 0.29µs, SKIPLIST는 전체를 탐색해 1.3~2.0µs다. miss(있는 종목 안의 없는 key)는 hit와 거의 같다.
 - 높이 4에서는 hash 계열이 SKIPLIST보다 50% 느리다(3.7절과 같은 이유).
 
+### 3.10 정확도: 내용 해시 (서버)
+`experiments/results/server/verify.txt`
+
+- SST 파일 자체의 sha256은 데이터가 같아도 memtable마다 다르다. 같은 100만 건을 flush하면 세 파일 모두 128,948,408바이트로 같은 크기지만, 약 4KB마다 4바이트(블록 체크섬, format_version 6이 파일마다 다른 값을 섞음)와 속성(DB identity, session identity)이 다르다. 데이터 블록 내용은 같다. 자동 flush 시점에 따라 파일 수와 크기도 달라질 수 있다.
+- 그래서 내용으로 비교한다(`--verify`). 모든 조건에서 세 memtable의 KV 개수, 정렬, 내용 해시가 같았고 flush 전후도 같았다.
+  - 2M 64MB 큐(자동 flush 여러 번): `5fbdca3b5202d4d1`
+  - 2M 512MB 소비자 4개 계좌 key(쓰는 순서가 실행마다 다름): `de9cb1a65871ffe1`
+  - 대시보드 flush 카드 1천만 건: `75e19f8a94ce3bc9`(SST 22~24개)
+  - 대시보드 멀티 스레드 카드 800만 건: `7e2d76fb9a1bf3dc`
+- HEAD에서 바뀐 total-order iterator를 flush가 쓰므로, flush 후 SST 내용이 SKIPLIST와 같다는 것이 그 iterator가 맞다는 직접 증거다.
+
 ## 4. 정정된 가설 (발표 때 주의)
 
 | 이전 주장 | 실제 |
@@ -217,6 +228,7 @@ op_trade_bench/out/op_trade_bench --memtable=HEAD|UPSTREAM|SKIPLIST [옵션]
 | `--hash_height=N` | HEAD, UPSTREAM bucket skiplist 높이(기본 4 = RocksDB 기본, SKIPLIST는 항상 12). 대시보드 기본은 12 |
 | `--scan_seconds=S`, `--scan_length=N` | 적재 후 flush 없이 prefix scan(`prefix_same_as_start`)을 S초, total-order scan(`total_order_seek`)을 S초. scan마다 iterator를 새로 열고 적재한 key 약 6.5만 개 중 하나로 seek한 뒤 최대 N개(기본 100)를 읽는다. RESULT에 `scan_prefix_*`, `scan_total_*`(횟수, 초당, 평균/p50/p99 µs) |
 | `--get_seconds=S` | 적재(와 scan) 후 DB::Get을 S초씩 세 종류: hit(적재한 key), miss(적재한 key 뒤에 한 바이트 붙인 없는 key, 같은 종목), noprefix(`trade_종목~\|`처럼 한 번도 쓰지 않은 종목, key 순서상 실제 종목 바로 뒤). RESULT에 `get_hit_*`, `get_miss_*`, `get_noprefix_*`(횟수, 초당, 평균/p50/p99 µs, 찾은 수) |
+| `--verify` | 마지막에 flush 전 DB 전체를 key 순서대로 읽고, 전량 flush 후 SST에서 다시 읽어 KV 개수, key 엄격 증가 여부, (key 길이, key, value 길이, value)의 64비트 FNV-1a 해시를 낸다. RESULT에 `verify_*` |
 
 - prefix 추출기: 첫 `|`까지(구분자 포함). key 끝은 길이로 정해지므로 t_id 뒤에 구분자가 필요 없다.
 - UPSTREAM은 `e591f5f1a`의 `hash_skiplist_rep.cc`를 이름만 바꿔 내장(`upstream_hash_skiplist_rep.cc`, `gen_upstream.sh`로 재생성). 그래서 한 바이너리로 세 memtable을 비교한다.
@@ -234,8 +246,11 @@ op_trade_bench/build.sh                                            # 측정기 �
 - 첫 카드는 flush: 1,000만 건, 64MB memtable, WAL 끔, 마지막에 `DB::Flush`. 세 개를 동시에 돌려 가장 느린 SKIPLIST가 약 22초.
 - 두 번째 카드는 멀티 스레드 쓰기: 800만 건, preload, 소비자 4개, 512MB, 계좌 key, WAL 끔, 높이 12, 동시 memtable 쓰기 켬. HEAD와 SKIPLIST는 memtable에 동시에 넣고, UPSTREAM은 지원하지 않아 쓰기 그룹 리더 한 스레드가 넣는다. 가장 느린 UPSTREAM이 약 25초. 서버에서 HEAD 약 63만, SKIPLIST 약 44만, UPSTREAM 약 37만 ops/s, Put p99 9.9 / 11.1 / 20.1µs. UPSTREAM도 CPU를 약 400% 쓰는데, 리더를 기다리며 도는 시간이다.
 - 카드 종류(`Benchmark.kind`)에 따라 화면이 다르다. flush는 평균 flush 시간과 flush 그래프를, write는 처리량, Put 지연, CPU를 앞에 둔다(`app.js`의 `VIEWS`).
-- 세 번째 카드는 range scan: 200만 건, 512MB(flush 없이 memtable에 다 들어감), 시간순 key, preload, 높이 12, prefix scan 8초 + total-order scan 8초, scan 길이 100. 약 21초. 서버에서 p50은 prefix scan HEAD 18.6 / SKIPLIST 19.1 / UPSTREAM 29.3µs, total-order scan HEAD 19.6 / SKIPLIST 19.1µs / UPSTREAM 308ms(약 15,700배, 8초에 26회). UPSTREAM은 total-order iterator를 열 때마다 memtable 200만 건을 새 skiplist로 복사한다. 지연 그래프는 로그 눈금이다.
-- 네 번째 카드는 점 조회: 500만 건, 2048MB(flush 없음), 계좌 key, preload, 높이 12, hit / miss / 없는 종목을 4초씩. 약 29초(DB를 닫을 때 2GB memtable flush가 있어 예상보다 길다). 서버에서 hit p50 HEAD 2.70 / SKIPLIST 2.96 / UPSTREAM 3.22µs, 없는 종목 p50 hash 0.31~0.36 / SKIPLIST 1.99µs. 없는 종목 패널은 SKIPLIST와 비교한다.
+- 세 번째 카드 "Range query (범위 조회)": 200만 건, 512MB(flush 없이 memtable에 다 들어감), 시간순 key, preload, 높이 12, prefix scan 8초 + total-order scan 8초, scan 길이 100. 약 21초. 서버에서 p50은 prefix scan HEAD 18.6 / SKIPLIST 19.1 / UPSTREAM 29.3µs, total-order scan HEAD 19.6 / SKIPLIST 19.1µs / UPSTREAM 308ms(약 15,700배, 8초에 26회). UPSTREAM은 total-order iterator를 열 때마다 memtable 200만 건을 새 skiplist로 복사한다. 지연 그래프는 로그 눈금이다.
+- 네 번째 카드 "Point query (점 조회)": 500만 건, 2048MB(flush 없음), 계좌 key, preload, 높이 12, hit / miss / 없는 종목을 4초씩. 약 29초(DB를 닫을 때 2GB memtable flush가 있어 예상보다 길다). 서버에서 hit p50 HEAD 2.70 / SKIPLIST 2.96 / UPSTREAM 3.22µs, 없는 종목 p50 hash 0.31~0.36 / SKIPLIST 1.99µs. 없는 종목 패널은 SKIPLIST와 비교한다.
+- flush 카드와 멀티 스레드 카드는 "정확도 검증"이 기본으로 켜져 있다(설정 모달에서 끌 수 있음). 끝나면 펼친 화면의 "정확도" 패널에 세 memtable의 KV 개수, key 순서, flush 전후 내용 해시, SST 파일 수와 크기를 나란히 보여주고 일치 여부를 판정한다. 검증 때문에 flush 카드 약 28초, 멀티 스레드 카드 약 31초.
+- 헤더 왼쪽 햄버거 아이콘에 마우스를 올리면(키보드는 포커스) 왼쪽에서 메뉴가 페이지 위로 나오고 페이지는 서서히 어두워진다. 떼면 닫히며 다시 밝아진다(CSS만, `app.css`의 `.nav`). 메뉴는 "벤치마크"(`/`)와 "아키텍처"(`/architecture.html`).
+- 아키텍처 페이지(`architecture.html`, `arch.js`, `arch.css`)는 HEAD(왼쪽)와 UPSTREAM(오른쪽)을 같은 장면으로 나란히 애니메이션한다. 장면은 1) 새 종목 삽입(Allocate, Transform, bucket miss와 HashBucket CAS 설치, RegisterPrefix로 prefix_list_ 정렬 삽입과 known_prefix 캐싱, bucket 삽입. UPSTREAM은 key와 노드를 Arena 양 끝에서 따로 할당) 2) 같은 종목 삽입(bucket hit, known_prefix 캐시 적중으로 prefix_list_ 건너뜀) 3) FLUSH(HEAD는 PrefixOrderedIterator가 prefix_list_ 순서로 bucket 경계를 넘으며 출력, UPSTREAM은 GetIterator가 모든 bucket을 새 SkipList로 복사한 뒤 출력) 4) Range query(Put 생략. prefix scan은 둘 다 hash로 bucket을 찾지만 entry마다 HEAD는 노드 한 곳, UPSTREAM은 노드와 멀리 떨어진 key 두 곳을 읽음. total-order scan은 HEAD가 prefix_list_로 Seek해 경계를 넘고, UPSTREAM은 iterator를 열 때 전체 복사) 5) 멀티 스레드 쓰기(HEAD는 LaunchParallelMemTableWriters로 T1~T3가 동시에 InsertConcurrently, UPSTREAM은 동시 쓰기가 꺼져 쓰기 그룹 리더 T1이 하나씩 넣고 T2·T3는 대기). 28단계, 캡션에 서버 실측값을 붙임, 재생/일시정지/단계 이동/속도, 키보드 ←→와 Space. 각 단계 상태를 미리 계산해 key별 SVG 그룹을 옮기는 방식이다.
 - 카드의 톱니 버튼이 설정 모달을 연다. KV 개수(100,000 단위, 최대 3,000만), memtable 크기(64MB 또는 128MB 단위, 최대 2GB), key 형식(하나만 선택), bucket 높이(4 또는 12, 기본 12), preload, WAL, 동시 memtable 쓰기(HEAD/SKIPLIST, 기본 켬), 소비자 개수(1~8, 프로세스마다 CPU 4개라 4 이하 권장). 설정은 서버 메모리에 카드별로 저장되고(재시작하면 기본값) 다음 측정부터 적용된다. 검증과 인자 변환은 `bench/RunSettings.java`.
 - 측정을 시작하면 카드 오른쪽에 KV 샘플 패널이 열리고, 카드와 패널이 한 블록으로 가운데 정렬된다. 샘플은 측정기가 실제로 만든 KV 8개(`--print_samples=8`)이고, 워크로드 특성은 `bench/WorkloadProfile.java`가 Trade.txt 앞 200만 행에서 구한 값(종목 3,425개, 종목별 거래 수, key/value 평균 크기)으로 쓴다. 화면 폭 1100px 이하에서는 패널이 카드 아래로 내려간다.
 - 각 프로세스는 `perf stat`(카운팅만, `demo.perf-counters`)으로 감싸 실행하고, 측정이 끝나면 펼친 화면의 "하드웨어 카운터"에 KV당 사이클, 명령어, IPC, L1/dTLB/LLC 미스를 보여준다(`bench/PerfStat.java`). 하이브리드 CPU라 `cpu_core/<event>/u`를 쓰고 P코어에 고정해야 읽힌다. 시작할 때 P코어에서 한 번 시험해 안 되면 카운터 없이 측정만 한다. 중단 버튼은 perf의 자식(측정기)까지 끈다.

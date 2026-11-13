@@ -230,6 +230,10 @@ public final class TargetRun {
             prevGets = gets;
             prevGetSec = getSec;
         }
+        if (g.containsKey("otb_verify_progress")) {
+            s.put("verifyPass", g.get("otb_verify_pass"));
+            s.put("verifyProgress", g.get("otb_verify_progress"));
+        }
         Map<String, Double> write = newHistograms.get("rocksdb.db.write.micros");
         s.put("writeP99", write == null ? null : write.get("p99"));
         samples.add(s);

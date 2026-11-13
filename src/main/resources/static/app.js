@@ -93,7 +93,9 @@ function progressOf(t) {
   if (!t) return 0;
   if (t.state === "DONE") return 1;
   const s = lastSample(t);
-  return s && s.limit ? Math.min(1, s.consumed / s.limit) : 0;
+  const load = s && s.limit ? Math.min(1, s.consumed / s.limit) : 0;
+  // With verification the load is most of the run; the two reads follow.
+  return s && isNum(s.verifyProgress) ? 0.85 * load + 0.15 * s.verifyProgress : load;
 }
 function autoFlushes(t) {
   return (t ? t.flushEvents : []).filter((e) => e.reason !== "Manual Flush");
@@ -280,6 +282,7 @@ function scanProgress(t) {
 const PHASE_TEXT = {
   1: "KV 준비 중", 2: "적재 중", 5: "prefix scan 중", 6: "total-order scan 중", 3: "flush 중",
   7: "hit 조회 중", 8: "miss 조회 중", 9: "없는 종목 조회 중",
+  10: "검증: flush 전 읽기", 11: "검증: flush 후 읽기",
 };
 
 // Point lookups: from RESULT at the end, live from the scrapes.
@@ -518,11 +521,12 @@ function specChips(s) {
     ["동시 쓰기", s.concurrent ? "켬" : "끔"],
     ...(s.scanSeconds > 0 ? [["scan", `${s.scanSeconds}초씩, ${fmtCount(s.scanLength)}개`]] : []),
     ...(s.getSeconds > 0 ? [["Get", `${s.getSeconds}초씩`]] : []),
+    ...(s.verify ? [["검증", "켬"]] : []),
   ];
 }
 
 function sameSettings(a, b) {
-  return !!a && !!b && ["kv", "memtableMb", "keyFormat", "preload", "wal", "consumers", "hashHeight", "concurrent", "scanSeconds", "scanLength", "getSeconds"]
+  return !!a && !!b && ["kv", "memtableMb", "keyFormat", "preload", "wal", "consumers", "hashHeight", "concurrent", "scanSeconds", "scanLength", "getSeconds", "verify"]
     .every((k) => a[k] === b[k]);
 }
 
@@ -531,7 +535,10 @@ function estimateSeconds(s, rates) {
   let rate = rates[(s.preload ? "preload" : "queue") + (s.wal ? "Wal" : "")];
   if (s.keyFormat === "symb_acct_tid") rate *= rates.accountKeyFactor;
   if (s.preload && s.consumers > 1) rate *= rates.multiWriterFactor;
-  return s.kv / rate + rates.overheadSeconds + 2 * (s.scanSeconds || 0) + 3 * (s.getSeconds || 0);
+  const verify = !s.verify ? 0
+    : (2 * s.kv) / rates.verifyReadKvPerS
+      + Math.min(s.kv, s.memtableMb * rates.kvPerMemtableMb) / rates.flushKvPerS;
+  return s.kv / rate + rates.overheadSeconds + 2 * (s.scanSeconds || 0) + 3 * (s.getSeconds || 0) + verify;
 }
 
 // Rough bytes one preloaded KV takes in memory (two std::strings and heap).
@@ -1083,7 +1090,10 @@ class Card {
       tile.dataset.state = t ? t.state : "IDLE";
       const p = (this.view.progress || progressOf)(t);
       const phase = lastSample(t) ? lastSample(t).phase : 0;
-      const doing = this.view.progress && PHASE_TEXT[phase] ? PHASE_TEXT[phase] : "측정 중";
+      // Cards with their own phases name every one; the others name only what
+      // follows the load (final flush, verification).
+      const named = this.view.progress ? PHASE_TEXT[phase] : [3, 10, 11].includes(phase) && PHASE_TEXT[phase];
+      const doing = named || "측정 중";
       tile.querySelector(".target-state").textContent = !t ? "대기"
         : t.state === "RUNNING" ? `${doing} ${nf0.format(p * 100)}%` : STATE_TEXT[t.state];
       const tv = this.view.tile;
@@ -1202,9 +1212,88 @@ class Card {
       }
     }
 
+    this.renderVerify();
     this.renderHw();
     this.renderStats();
     this.renderLogs();
+  }
+
+  // Did every memtable store the same data? Content hashes from op_trade_bench
+  // --verify, before and after a full flush.
+  renderVerify() {
+    const r = this.run;
+    const host = this.$(".verify");
+    if (!r || !r.settings || !r.settings.verify) { host.replaceChildren(); this.verifyKey = null; return; }
+    const key = `${r.id}:${r.active}`;
+    if (this.verifyKey === key) return;
+    this.verifyKey = key;
+
+    const head = el("div", { class: "hw-head" },
+      el("h3", { class: "panel-title", text: "정확도" }),
+      el("span", { class: "panel-hint", text: "전량 flush 전후로 DB 전체를 key 순서대로 읽어 (key, value) 내용을 해시" }));
+    if (r.active) {
+      host.replaceChildren(head, el("p", { class: "hw-wait",
+        text: "적재가 끝나면 flush 전에 한 번, 전량 flush 후 SST에서 한 번 더 읽어 세 memtable의 내용을 비교합니다." }));
+      return;
+    }
+    const res = Object.fromEntries(TARGETS.map((m) => [m, (r.targets[m] && r.targets[m].result) || {}]));
+    const has = TARGETS.filter((m) => res[m].verify === "1");
+    if (!has.length) {
+      host.replaceChildren(head, el("p", { class: "hw-wait", text: "검증 결과가 없습니다. 측정이 중간에 멈췄는지 실행 로그를 확인하세요." }));
+      return;
+    }
+    const kv = r.settings.kv;
+    const after = (m) => res[m].verify_hash;
+    const hashes = new Set(has.map(after));
+    // The hash most memtables agree on; only the others are marked.
+    const tally = {};
+    has.forEach((m) => { tally[after(m)] = (tally[after(m)] || 0) + 1; });
+    const majority = Object.entries(tally).sort((a, b) => b[1] - a[1])[0][0];
+    const checks = has.map((m) => ({
+      m,
+      countOk: num(res[m].verify_count) === kv && num(res[m].verify_pre_count) === kv,
+      sorted: res[m].verify_sorted === "1" && res[m].verify_pre_sorted === "1",
+      same: res[m].verify_pre_hash === res[m].verify_hash,
+      readOk: res[m].verify_ok === "1",
+    }));
+    const allOk = has.length === TARGETS.length && hashes.size === 1
+      && checks.every((c) => c.countOk && c.sorted && c.same && c.readOk);
+
+    const problems = [];
+    if (has.length < TARGETS.length) problems.push(`${TARGETS.filter((m) => !has.includes(m)).join(", ")} 결과 없음`);
+    if (hashes.size > 1) problems.push("memtable끼리 내용 해시가 다름");
+    for (const c of checks) {
+      if (!c.countOk) problems.push(`${c.m}: KV 개수가 ${fmtCount(kv)}가 아님`);
+      if (!c.sorted) problems.push(`${c.m}: key 순서가 어긋남`);
+      if (!c.same) problems.push(`${c.m}: flush 전후 해시가 다름`);
+      if (!c.readOk) problems.push(`${c.m}: 읽기 오류`);
+    }
+    const verdict = el("div", { class: `verify-verdict ${allOk ? "ok" : "bad"}` },
+      el("span", { class: "verify-icon", "aria-hidden": "true", text: allOk ? "✓" : "✗" }),
+      el("div", {},
+        el("strong", { text: allOk ? "세 memtable이 같은 데이터를 저장했습니다" : "일치하지 않습니다" }),
+        el("span", { text: allOk
+          ? `KV ${fmtCount(kv)}개, key는 엄격하게 증가, flush 전과 후의 내용 해시가 모두 ${after(has[0])}`
+          : problems.join(", ") })));
+
+    const cell = (text, mark) => el("td", { class: `num mono${mark ? " " + mark : ""}`, text });
+    const rows = [
+      ["KV 개수", (m) => cell(fmtCount(num(res[m].verify_count)), num(res[m].verify_count) === kv ? "" : "bad")],
+      ["key 순서", (m) => cell(res[m].verify_sorted === "1" ? "엄격 증가" : "어긋남", res[m].verify_sorted === "1" ? "" : "bad")],
+      ["내용 해시 (flush 전)", (m) => cell(res[m].verify_pre_hash || "–", res[m].verify_pre_hash === res[m].verify_hash ? "" : "bad")],
+      ["내용 해시 (flush 후, SST)", (m) => cell(res[m].verify_hash || "–", res[m].verify_hash === majority ? "" : "bad")],
+      ["읽는 데 걸린 시간 (전 / 후)", (m) => cell(`${nf2.format(num(res[m].verify_pre_s))} / ${nf2.format(num(res[m].verify_s))}초`)],
+      ["SST 파일", (m) => cell(`${fmtCount(num(res[m].verify_sst_files))}개, ${fmtBytes(num(res[m].verify_sst_bytes))}`)],
+    ];
+    const table = el("table", { class: "stats-table verify-table" },
+      el("thead", {}, el("tr", {}, el("th", { text: "항목" }),
+        ...TARGETS.map((m) => el("th", { "data-target": m, text: m })))),
+      el("tbody", {}, ...rows.map(([label, f]) => el("tr", {}, el("td", { text: label }),
+        ...TARGETS.map((m) => (res[m].verify === "1" ? f(m) : cell("–")))))));
+    const note = el("p", { class: "hw-foot",
+      text: "SST 파일 자체의 해시는 데이터가 같아도 다릅니다. 4KB 블록마다 붙는 체크섬에 파일마다 다른 값(세션 ID, 파일 번호)이 섞이고, DB·세션 ID 같은 메타데이터가 들어가기 때문입니다. flush 시점에 따라 파일 수와 크기도 달라질 수 있습니다. 그래서 파일이 아니라 내용(key, value)을 읽어 비교합니다." });
+    host.replaceChildren(head, el("div", { class: "panel" },
+      el("div", { class: "panel-body" }, verdict, el("div", { class: "stats-scroll" }, table), note)));
   }
 
   // perf stat counters, read when each process exits.
