@@ -95,13 +95,24 @@ using ROCKSDB_NAMESPACE::WriteOptions;
 
 namespace {
 
-// $TPCE_DIR/flat_out/Trade.txt, with TPCE_DIR defaulting to $HOME/tpc-e.
+// $TPCE_DIR/flat_out/Trade.txt when TPCE_DIR is set (an EGen output tree),
+// otherwise the Trade.txt kept in this repository: the binary is built into
+// op_trade_bench/out/, so that is ../Trade.txt from the executable
+// (restore it with op_trade_bench/data/unpack.sh).
 std::string DefaultInput() {
   if (const char* dir = getenv("TPCE_DIR"); dir != nullptr && *dir != '\0') {
     return std::string(dir) + "/flat_out/Trade.txt";
   }
-  const char* home = getenv("HOME");
-  return std::string(home != nullptr ? home : ".") + "/tpc-e/flat_out/Trade.txt";
+  char exe[4096];
+  ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+  if (n > 0) {
+    std::string path(exe, static_cast<size_t>(n));
+    size_t slash = path.rfind('/');
+    if (slash != std::string::npos) {
+      return path.substr(0, slash) + "/../Trade.txt";
+    }
+  }
+  return "Trade.txt";
 }
 constexpr int kTradeColumns = 15;
 constexpr int kTradeIdColumn = 0;

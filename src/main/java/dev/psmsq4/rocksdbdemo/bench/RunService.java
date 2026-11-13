@@ -129,6 +129,7 @@ public class RunService {
             }
             cmd.add(binary.toString());
             cmd.add("--memtable=" + t.memtable());
+            cmd.add("--input=" + props.tradeFile());
             cmd.addAll(run.settings().toArgs());
             cmd.addAll(run.benchmark().fixedArgs());
             cmd.add("--db=" + dir.resolve("db"));

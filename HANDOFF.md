@@ -29,7 +29,7 @@ RocksDB `HashSkipListRep`(prefix hash memtable)의 두 결격 사유를 없앴�
 | 작업 브랜치 | 이 저장소의 submodule `rocksdb/` (github.com/psmsq4/rocksdb_hash, 브랜치 `hash_skiplist_improvements`) | 커밋 5개 + base, push됨. 서버의 옛 경로 `~/rocksdb/rocksdb_hash`는 `rocksdb_hash_demo/rocksdb`를 가리키는 심볼릭 링크 |
 | base | `e591f5f1a` (2026-11-08 기준 facebook/rocksdb main) | |
 | 시연 앱, 벤치, 실험 | `~/rocksdb/rocksdb_hash_demo` (이 저장소) | |
-| TPC-E 데이터 | `~/tpc-e/flat_out/*.txt` (5.7GB, Trade.txt 3.2GB, 28,664,881행) | EGen 5000 customers, scale factor 500, initial trade days 300 (`~/tpc-e/bin/EGenLoaderFrom1To5000.log`) |
+| TPC-E 데이터 | `op_trade_bench/Trade.txt` (3.2GB, 28,664,881행, git 제외). 저장소에는 `op_trade_bench/data/`에 zstd 압축 90MB 조각과 sha256이 있고 `data/unpack.sh`로 복원. EGen 원본 전체는 서버의 `~/tpc-e/flat_out/*.txt`(5.7GB) | EGen 5000 customers, scale factor 500, initial trade days 300 (`~/tpc-e/bin/EGenLoaderFrom1To5000.log`) |
 | 과거 과제 보고서 | `~/rocksdb_report/*.pdf` (14팀 1~4차 발표) | 일부 주장은 아래 4절에서 정정 |
 | 연구용 저장소 | `~/oss_bigdata/rocksdb`, 브랜치 `prefix_layer` | 로그, 계측 코드로 오염됨. **쓰지 말 것** |
 | Claude 작업 메모 | `~/.claude/projects/-home-psmsq4-oss-bigdata-rocksdb/memory/` | 서버의 Claude Code에서도 쓰려면 복사 |
@@ -316,7 +316,7 @@ git clang-format   # clang-format 23.1.5가 ~/.local/bin에 있음
 - [x] 경로 하드코딩 제거.
   - 실험 스크립트는 바이너리를 스크립트 위치 기준으로 찾는다(`OTB_BIN`으로 덮어쓰기 가능).
   - 빌드 스크립트의 `ROCKSDB_ROOT` 기본값은 submodule `rocksdb/`다(1.1절).
-  - `op_trade_bench`의 기본 입력은 실행 시 `$TPCE_DIR/flat_out/Trade.txt`로 정해진다(`TPCE_DIR` 기본값 `$HOME/tpc-e`).
+  - `op_trade_bench`의 기본 입력은 실행 파일 기준 `../Trade.txt`(= `op_trade_bench/Trade.txt`)다. `TPCE_DIR`이 설정돼 있으면 `$TPCE_DIR/flat_out/Trade.txt`. 웹은 `demo.trade-file`(기본 `op_trade_bench/Trade.txt`)을 `--input`으로 넘긴다.
 - [ ] RocksDB 빌드: `build/`(Debug, 테스트)와 `build-rel/`(Release 공유 라이브러리) 모두 없음. 5.4절 참고. 서버는 RAM이 넉넉해 `-j`를 크게 잡아도 된다.
 - [ ] 도구: g++ 14.3, cmake 3.31, docker, python3 있음. JDK 21은 `~/java21`(5.2절).
 - [ ] `taskset` 코어 번호 확인. i9-12900K는 0-15가 P코어(하이퍼스레드 포함), 16-23이 E코어다. 기존 `2-13`은 P코어 범위 안이다.

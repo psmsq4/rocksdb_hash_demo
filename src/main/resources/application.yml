@@ -14,8 +14,9 @@ demo:
     upstream: 6-9
     skiplist: 10-13
   log-lines: 200
-  # Same default as op_trade_bench (TPCE_DIR defaults to ~/tpc-e).
-  trade-file: ${user.home}/tpc-e/flat_out/Trade.txt
+  # TPC-E Trade.txt kept in the repository (restore it with
+  # op_trade_bench/data/unpack.sh). Passed to op_trade_bench as --input.
+  trade-file: ${user.dir}/op_trade_bench/Trade.txt
   # Wrap each run in `perf stat` (counting only) and show the hardware
   # counters after it finishes. Turned off automatically when perf cannot run.
   perf-counters: true

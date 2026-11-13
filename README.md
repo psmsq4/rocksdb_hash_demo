@@ -182,8 +182,9 @@ flowchart TB
 | uPlot | 1.6.30 (`static/vendor`에 포함, 외부 CDN 없음) |
 
 ### 데이터
-- TPC-E [EGen](https://www.tpc.org/tpc_documents_current_versions/current_specifications5.asp) v1.14.0이 만든 `Trade.txt`. 기본 위치는 `~/tpc-e/flat_out/Trade.txt`(`TPCE_DIR`, 또는 `application.yml`의 `demo.trade-file`로 변경).
-- 생성 설정: `EGenLoader -c 5000 -t 5000 -f 500 -w 300 -i flat_in -o flat_out`
+- TPC-E [EGen](https://www.tpc.org/tpc_documents_current_versions/current_specifications5.asp) v1.14.0이 만든 `Trade.txt`(고객 5,000, scale factor 500, 초기 거래 300일, 28,664,881행, 3.2GB).
+- EGen을 빌드하지 않아도 재현할 수 있도록 **저장소에 포함**했다. GitHub은 100MB가 넘는 파일을 받지 않으므로 zstd로 압축해 90MB 조각으로 나눠 `op_trade_bench/data/`에 두었고, `op_trade_bench/data/unpack.sh`가 `op_trade_bench/Trade.txt`로 복원하고 sha256을 확인한다. 복원에는 `zstd`가 필요하다.
+- 측정기는 `--input`이 없으면 `op_trade_bench/Trade.txt`를 읽는다(`TPCE_DIR`이 설정돼 있으면 `$TPCE_DIR/flat_out/Trade.txt`). 시연 웹은 `demo.trade-file`을 `--input`으로 넘긴다.
 
 ## 빌드
 
@@ -198,7 +199,7 @@ cd rocksdb_hash_demo
 ```
 rocksdb_hash_demo/
 ├─ rocksdb/          submodule: psmsq4/rocksdb_hash, 브랜치 hash_skiplist_improvements
-├─ op_trade_bench/   측정기 (C++)
+├─ op_trade_bench/   측정기 (C++), Trade.txt(복원 후), data/ (압축 조각)
 ├─ src/              시연 웹 (Spring Boot + 정적 페이지)
 ├─ experiments/      실험 스크립트와 결과
 └─ HANDOFF.md        작업 기록, 측정 방법론
@@ -220,6 +221,11 @@ mkdir -p rocksdb/build && cd rocksdb/build
 cmake .. -DCMAKE_BUILD_TYPE=Debug -DWITH_TESTS=ON
 make -j8 db_memtable_test prefix_test inlineskiplist_test
 ./db_memtable_test --gtest_filter='*HashSkipList*'
+```
+
+### 데이터 복원
+```bash
+op_trade_bench/data/unpack.sh   # → op_trade_bench/Trade.txt (3.2GB), sha256 확인
 ```
 
 ### 측정기 (op_trade_bench)
@@ -300,7 +306,7 @@ java -jar build/libs/rocksdb-demo-0.1.0.jar --server.address=0.0.0.0 # 다른 PC
 | 키 | 기본값 | 뜻 |
 |---|---|---|
 | `demo.bench-binary` | `op_trade_bench/out/op_trade_bench` | 측정기 경로 |
-| `demo.trade-file` | `~/tpc-e/flat_out/Trade.txt` | 입력 데이터 |
+| `demo.trade-file` | `op_trade_bench/Trade.txt` | 입력 데이터(측정기에 `--input`으로 전달) |
 | `demo.work-dir` | `/tmp/otb_work/web` | 실행마다 DB와 지표 파일 |
 | `demo.cpu-sets.head/upstream/skiplist` | `2-5` / `6-9` / `10-13` | 코어 고정. 다른 CPU에서는 맞게 바꾼다 |
 | `demo.perf-counters` | `true` | `perf stat`으로 감싸기 |
