@@ -2,11 +2,31 @@
 
 ## 개요
 
-HashSkipList는 RocksDB가 기본 제공하는 Memtable 구현 중 하나였으나, 멀티 스레드 불가 / 느린 Range Query 성능(Memtable 전체 복사) / SkipList의 비효율적인 메모리 배치 등으로 외면되어 존재만 하는 Memtable이었다.<br>
-HashSkipList의 각 Bucket은 SkipList로 관리되고 있었고, 디폴트 Memtable인 SkipList(InlineSkipList)의 경우 멀티 스레드를 지원하고 있었으므로 Bucket 교체만으로 동시성 처리가 가능해 보였다.<br>
-오픈소스SW빅데이터 과목에서 Bucket을 SkipList에서 InlineSkipList로 교체함에 따라 멀티 스레드 지원이 충분히 가능함을 보였고, 이번 졸업 작품은 과목 때 지적받은 Hash 자료구조의 Range Query 난제를 해결했다.<br>
+HashSkipList는 RocksDB가 기본 제공하는 Memtable 구현 중 하나였으나, 다음 세 가지 문제로 기피되어 왔다.
+* 멀티 스레드 불가
+* 느린 Range Query 성능(종목을 넘는 total-order 조회와 flush 때마다 Memtable 전체 복사, 사실상 운영에서 사용 불가능한 수준)
+* Bucket에 쓰인 SkipList의 비효율적인 메모리 배치(노드와 KV를 따로 할당)
+
+### 멀티 스레드, 메모리 배치 (해결)
+기본 Memtable인 SkipList(InlineSkipList)는 멀티 스레드를 지원하므로, HashSkipList의 Bucket을 InlineSkipList로 교체했다.<br>
+* `Allocate()`가 KV 공간을 InlineSkipList 노드로 받도록 바꿨다. 노드와 KV가 한 덩어리가 되어 메모리 배치 문제도 함께 해결됐다(prefix scan 격차 57% 해소).
+* Bucket 생성 로직에서 CAS를 걸어준다.
+* 동시 삽입은 `InlineSkipList::InsertConcurrently()`로 하고, `IsInsertConcurrentlySupported()`를 켜서 `allow_concurrent_memtable_write`를 받아들인다.
+
+### Range Query 성능 (해결)
+이번 졸업 작품의 핵심은 이 부분이다. 다음 과정으로 Hash 자료구조의 Range Query 난제를 해결했다.<br>
+* KV가 입력될 때 prefix를 따로 추출해 InlineSkipList로 정렬 상태를 유지한다. Bucket마다 마지막 prefix를 캐시(`known_prefix`)해 새 prefix일 때만 목록을 찾는다.
+* 범위 조회 시 현재 조회 중인 prefix 경계가 바뀌는 지점에서 정렬된 prefix 목록의 다음 prefix로 넘어간다.
+* 그 prefix의 bucket으로 바로 이동해서 해당 prefix가 처음 시작하는 지점을 찾고 조회를 재개한다.
+
+### 목표
 이에 따라 HashSkipList 역시 운영 상황에서 충분히 사용 가능할 정도의 성능을 확보했으며 특정 상황에서는 기본 SkipList보다 좋은 성능을 보인다.<br>
-이번 졸업작품은 rocksdb를 기반 기술로 쓰는 Alluxio 또는 MySQL 등의 개발자들에게 충분히 고려할 만한 Memtable 선택지를 제공하는데의 의의를 둔다. 
+이번 졸업작품은 rocksdb를 기반 기술로 쓰는 Alluxio 또는 MyRocks(MySQL) 등의 개발자들에게 충분히 고려할 만한 Memtable 선택지를 제공하는데의 의의를 둔다.<br>
+
+> 운영 관점에서 KV Store를 사용할 경우에는 RDBMS처럼 구조화된 스키마가 없기 때문에 prefix를 두는 경우가 많다(예: MyRocks의 모든 key는 4바이트 index id로 시작한다).
+> 이러한 운영 환경에서는 자연스럽게 HashSkipList에 적합한 워크로드가 생성된다.
+> KV Entries 전체를 다수의 SkipList로 분산하는 효과를 가지기 때문이다. 이에 대한 효과는 아래 성능 항목을 참고한다.
+> 단, `prefix_extractor`를 설정해야 하며(없으면 RocksDB가 SkipList로 바꾼다), prefix마다 entry가 많을수록 효과가 크다.
 
 | 비교 대상 | 설명 |
 |---|---|
