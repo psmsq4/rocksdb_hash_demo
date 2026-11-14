@@ -131,7 +131,7 @@ UPSTREAM은 total-order iterator를 열 때마다 memtable 200만 건을 새 Ski
 
 ### HashSkipListRep (HEAD)
 
-<p align="center"><img src="docs/report/figures/head_flow.png" alt="HEAD HashSkipListRep 삽입과 순회 흐름" width="460"></p>
+<p align="center"><img src="docs/report/figures/head_flow.png" alt="HEAD HashSkipListRep 삽입과 순회 흐름" width="600"></p>
 
 원본: [`docs/diagrams/head_insert_iterate.mmd`](docs/diagrams/head_insert_iterate.mmd) (Mermaid)
 

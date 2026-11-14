@@ -1,12 +1,26 @@
 flowchart TB
-  K["Insert(key)"] --> T["Transform<br/>첫 | 까지 = prefix"]
-  T --> HB["hash(prefix) % 100만<br/>→ buckets_[i]"]
+  K["Insert(key) / InsertConcurrently(key)"] --> T["Transform<br/>첫 | 까지 = prefix"]
+  T --> HB["GetInitializedBucket<br/>hash(prefix) % 100만 → buckets_[i]"]
   HB -->|"비어 있음"| NEW["HashBucket 생성<br/>CAS로 설치"]
-  HB -->|"있음"| KP{"known_prefix<br/>== prefix ?"}
+  HB -->|"있음"| KP{{"RegisterPrefix<br/>known_prefix == prefix ?"}}
   NEW --> KP
-  KP -->|"같음 (대부분)"| INS["bucket InlineSkipList에 삽입<br/>(동시 삽입 가능)"]
-  KP -->|"다름 (새 종목, 해시 충돌)"| AP["prefix_list_ 탐색<br/>없으면 정렬 삽입<br/>known_prefix 갱신"]
-  AP --> INS
+  KP -->|"같음 (대부분)"| INS
+  KP -->|"다름 또는 비어 있음<br/>(새 종목, 해시 충돌)"| A1
+
+  subgraph AP[" "]
+    A1{{"<b>AddPrefix(prefix)</b><br/>prefix_list_.Seek → 이미 있나?"}}
+    A1 -->|"없음"| A3["prefix_list_.AllocateKey<br/>prefix 노드 할당"]
+    A3 --> A4{{"동시 쓰기?"}}
+    A4 -->|"아니오"| A5["prefix_list_.Insert<br/>정렬 위치에 삽입"]
+    A4 -->|"예"| A6{{"prefix_list_.InsertConcurrently<br/>성공?"}}
+    A6 -->|"실패: 다른 스레드가<br/>먼저 넣음"| A7["다시 Seek해서<br/>그 노드 사용"]
+  end
+
+  A1 -->|"있음"| ST
+  A5 --> ST
+  A6 -->|"성공"| ST
+  A7 --> ST
+  ST["known_prefix.store(prefix 노드)<br/>release: prefix가 목록에 들어간 뒤 공개"] --> INS["bucket InlineSkipList에 key 삽입<br/>Insert / InsertConcurrently"]
 
   IT["flush / total-order iterator"] --> PL["prefix_list_ 순서로<br/>prefix 순회"]
   PL --> BK["prefix마다 그 bucket의<br/>해당 범위 읽기"]
