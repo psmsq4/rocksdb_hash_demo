@@ -1,0 +1,13 @@
+flowchart TB
+  K["Insert(key)"] --> T["Transform<br/>첫 | 까지 = prefix"]
+  T --> HB["hash(prefix) % 100만<br/>→ buckets_[i]"]
+  HB -->|"비어 있음"| NEW["HashBucket 생성<br/>CAS로 설치"]
+  HB -->|"있음"| KP{"known_prefix<br/>== prefix ?"}
+  NEW --> KP
+  KP -->|"같음 (대부분)"| INS["bucket InlineSkipList에 삽입<br/>(동시 삽입 가능)"]
+  KP -->|"다름 (새 종목, 해시 충돌)"| AP["prefix_list_ 탐색<br/>없으면 정렬 삽입<br/>known_prefix 갱신"]
+  AP --> INS
+
+  IT["flush / total-order iterator"] --> PL["prefix_list_ 순서로<br/>prefix 순회"]
+  PL --> BK["prefix마다 그 bucket의<br/>해당 범위 읽기"]
+  BK -->|"prefix가 바뀌면"| PL

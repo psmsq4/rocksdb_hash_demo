@@ -1,0 +1,36 @@
+flowchart LR
+  subgraph Browser["브라우저"]
+    IDX["index.html / app.js<br/>벤치마크 카드 4종, uPlot 그래프"]
+    ARCH["architecture.html / arch.js<br/>HEAD vs UPSTREAM 애니메이션"]
+  end
+
+  subgraph Spring["Spring Boot :8181"]
+    BC["BenchController<br/>/api/benchmarks"]
+    WC["WorkloadController<br/>/api/workload"]
+    CAT["BenchmarkCatalog<br/>카드 정의, 카드별 설정"]
+    RS["RunService<br/>실행 1개씩, 1초마다 수집"]
+    TR["TargetRun x3<br/>시계열, RESULT, perf, 로그"]
+    WP["WorkloadProfile<br/>Trade.txt 앞 200만 행 분석"]
+  end
+
+  subgraph Bench["op_trade_bench x3 (perf stat + taskset, 동시 실행)"]
+    H["HEAD<br/>코어 2-5"]
+    U["UPSTREAM<br/>코어 6-9<br/>(upstream rep 내장)"]
+    S["SKIPLIST<br/>코어 10-13"]
+  end
+
+  LIB["librocksdb.so<br/>submodule rocksdb/"]
+  DATA[("TPC-E Trade.txt")]
+
+  IDX -->|"1초마다 GET run, POST run, PUT settings"| BC
+  IDX -->|"GET workload"| WC
+  BC --> CAT
+  BC --> RS
+  WC --> WP
+  RS -->|"프로세스 실행"| Bench
+  RS -->|"1초마다 GET /metrics"| Bench
+  Bench -->|"stdout: METRICS_PORT, SAMPLE, RESULT"| TR
+  RS --> TR
+  Bench --> LIB
+  DATA --> Bench
+  DATA --> WP

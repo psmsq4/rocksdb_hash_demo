@@ -1,0 +1,204 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1010" viewBox="0 0 1600 1010" font-family="NanumSquare, 'Noto Sans CJK KR', sans-serif">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#3d4652"/>
+    </marker>
+    <marker id="arB" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#2f6fbf"/>
+    </marker>
+    <marker id="arG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#c26a1b"/>
+    </marker>
+    <style>
+      .zone { fill: #f6f8fb; stroke: #c9d2de; stroke-width: 1.5; }
+      .zt { font-size: 22px; font-weight: 800; fill: #1d2430; }
+      .zs { font-size: 15px; fill: #5a6676; }
+      .box { fill: #ffffff; stroke: #aab6c6; stroke-width: 1.4; }
+      .bt { font-size: 17px; font-weight: 700; fill: #1d2430; }
+      .bs { font-size: 14px; fill: #4a5564; }
+      .chip { fill: #e8eef7; }
+      .ct { font-size: 13px; fill: #2c3a4d; font-weight: 700; }
+      .edge { stroke: #3d4652; stroke-width: 2; fill: none; }
+      .pull { stroke: #2f6fbf; stroke-width: 2.4; fill: none; stroke-dasharray: 7 5; }
+      .res { stroke: #c26a1b; stroke-width: 2.2; fill: none; }
+      .el { font-size: 14px; fill: #1d2430; font-weight: 700; }
+      .els { font-size: 13px; fill: #4a5564; }
+      .num { fill: #1d2430; }
+      .numt { font-size: 14px; font-weight: 800; fill: #ffffff; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="1010" fill="#ffffff"/>
+
+  <!-- ===== Browser ===== -->
+  <rect class="zone" x="20" y="20" width="330" height="470" rx="14"/>
+  <text class="zt" x="40" y="56">브라우저 (Frontend)</text>
+  <text class="zs" x="40" y="80">정적 페이지, 빌드 도구 없음</text>
+  <rect class="box" x="40" y="100" width="290" height="170" rx="10"/>
+  <text class="bt" x="56" y="128">벤치마크 페이지</text>
+  <text class="bs" x="56" y="152">index.html · app.js · app.css</text>
+  <text class="bs" x="56" y="176">카드 4종, 설정 창, KV 샘플,</text>
+  <text class="bs" x="56" y="198">실시간 그래프, 통계, 정확도 패널</text>
+  <rect class="chip" x="56" y="214" width="122" height="26" rx="6"/><text class="ct" x="66" y="232">uPlot 1.6.30</text>
+  <rect class="chip" x="186" y="214" width="128" height="26" rx="6"/><text class="ct" x="196" y="232">fetch 1초 폴링</text>
+  <rect class="box" x="40" y="286" width="290" height="120" rx="10"/>
+  <text class="bt" x="56" y="314">아키텍처 페이지</text>
+  <text class="bs" x="56" y="338">architecture.html · arch.js</text>
+  <text class="bs" x="56" y="362">HEAD vs UPSTREAM 동작을</text>
+  <text class="bs" x="56" y="384">SVG 애니메이션 38단계로 비교</text>
+  <rect class="chip" x="40" y="420" width="140" height="26" rx="6"/><text class="ct" x="50" y="438">Vanilla JS ES2020</text>
+  <rect class="chip" x="188" y="420" width="142" height="26" rx="6"/><text class="ct" x="198" y="438">HTML5 · CSS · SVG</text>
+
+  <!-- ===== Spring Boot ===== -->
+  <rect class="zone" x="400" y="20" width="560" height="470" rx="14"/>
+  <text class="zt" x="420" y="56">Spring Boot 웹 서버 :8181</text>
+  <text class="zs" x="420" y="80">Java 21 · Spring Boot 3.5.9 · Spring Web MVC · 내장 Tomcat · Gradle 8.10</text>
+
+  <rect class="box" x="420" y="100" width="250" height="96" rx="10"/>
+  <text class="bt" x="436" y="128">REST Controller</text>
+  <text class="bs" x="436" y="152">BenchController /api/benchmarks</text>
+  <text class="bs" x="436" y="174">WorkloadController /api/workload</text>
+
+  <rect class="box" x="690" y="100" width="250" height="96" rx="10"/>
+  <text class="bt" x="706" y="128">BenchmarkCatalog</text>
+  <text class="bs" x="706" y="152">카드 정의, 카드별 설정 저장</text>
+  <text class="bs" x="706" y="174">RunSettings 검증 → CLI 인자</text>
+
+  <rect class="box" x="420" y="212" width="520" height="112" rx="10"/>
+  <text class="bt" x="436" y="240">RunService</text>
+  <text class="bs" x="436" y="264">ProcessBuilder로 측정기 3개 동시 실행 (한 번에 1개 측정)</text>
+  <text class="bs" x="436" y="286">ScheduledExecutor 1초 주기 → java.net.http.HttpClient로 /metrics 수집</text>
+  <text class="bs" x="436" y="308">stdout 읽기 스레드: METRICS_PORT · SAMPLE · RESULT 줄 파싱</text>
+
+  <rect class="box" x="420" y="340" width="250" height="132" rx="10"/>
+  <text class="bt" x="436" y="368">TargetRun × 3</text>
+  <text class="bs" x="436" y="392">Prometheus 텍스트 파싱(PromText)</text>
+  <text class="bs" x="436" y="414">→ 1초 시계열, flush 이벤트,</text>
+  <text class="bs" x="436" y="436">tickers, histograms, RESULT</text>
+  <text class="bs" x="436" y="458">→ 실행 snapshot JSON</text>
+
+  <rect class="box" x="690" y="340" width="250" height="132" rx="10"/>
+  <text class="bt" x="706" y="368">PerfStat · WorkloadProfile</text>
+  <text class="bs" x="706" y="392">perf stat CSV → 사이클, IPC,</text>
+  <text class="bs" x="706" y="414">L1/dTLB/LLC 미스 (KV당)</text>
+  <text class="bs" x="706" y="436">Trade.txt 앞 200만 행으로</text>
+  <text class="bs" x="706" y="458">종목 수, key/value 크기 분석</text>
+
+  <!-- ===== OS ===== -->
+  <rect class="zone" x="1010" y="20" width="570" height="140" rx="14"/>
+  <text class="zt" x="1030" y="56">Linux 실행 환경</text>
+  <text class="zs" x="1030" y="80">Rocky Linux 10.2 · i9-12900K · 124GB</text>
+  <rect class="box" x="1030" y="94" width="262" height="50" rx="10"/>
+  <text class="bt" x="1046" y="116">taskset -c</text>
+  <text class="bs" x="1046" y="136">P코어 4개씩 고정</text>
+  <rect class="box" x="1302" y="94" width="262" height="50" rx="10"/>
+  <text class="bt" x="1318" y="116">perf stat</text>
+  <text class="bs" x="1318" y="136">하드웨어 카운터 (선택)</text>
+
+  <!-- ===== op_trade_bench x3 ===== -->
+  <rect class="zone" x="1010" y="190" width="570" height="560" rx="14"/>
+  <text class="zt" x="1030" y="226">op_trade_bench × 3 (C++20)</text>
+  <text class="zs" x="1030" y="250">memtable만 다르고 같은 KV를 동시에 처리</text>
+
+  <rect x="1030" y="266" width="170" height="54" rx="10" fill="#e3eefc" stroke="#3987e5" stroke-width="2"/>
+  <text class="bt" x="1046" y="290" style="fill:#1d4f8f">HEAD</text><text class="bs" x="1046" y="310">코어 2-5</text>
+  <rect x="1210" y="266" width="170" height="54" rx="10" fill="#fdeedd" stroke="#e8822a" stroke-width="2"/>
+  <text class="bt" x="1226" y="290">UPSTREAM</text><text class="bs" x="1226" y="310">코어 6-9</text>
+  <rect x="1390" y="266" width="170" height="54" rx="10" fill="#e2f4ea" stroke="#2f9e63" stroke-width="2"/>
+  <text class="bt" x="1406" y="290">SKIPLIST</text><text class="bs" x="1406" y="310">코어 10-13</text>
+
+  <rect class="box" x="1030" y="336" width="250" height="120" rx="10"/>
+  <text class="bt" x="1046" y="362">쓰기 경로</text>
+  <text class="bs" x="1046" y="386">생산자: Trade.txt 행 → KV</text>
+  <text class="bs" x="1046" y="408">큐 또는 preload → 소비자 N개</text>
+  <text class="bs" x="1046" y="430">→ DB::Put / Get / Iterator</text>
+
+  <rect class="box" x="1300" y="336" width="260" height="196" rx="10"/>
+  <text class="bt" x="1316" y="362">/metrics HTTP 서버</text>
+  <text class="bs" x="1316" y="386">127.0.0.1:임의 포트, poll() 기반</text>
+  <text class="bs" x="1316" y="408">Prometheus 텍스트 형식으로 노출</text>
+  <text class="bs" x="1316" y="434">· DB::GetIntProperty</text>
+  <text class="bs" x="1316" y="456">  memtable 크기, flush, L0, SST</text>
+  <text class="bs" x="1316" y="478">· Statistics tickers / histograms</text>
+  <text class="bs" x="1316" y="500">· EventListener flush 이벤트</text>
+  <text class="bs" x="1316" y="522">· /proc CPU, RSS</text>
+
+  <rect class="box" x="1030" y="472" width="250" height="60" rx="10"/>
+  <text class="bt" x="1046" y="498">--verify</text>
+  <text class="bs" x="1046" y="520">flush 전후 전체 FNV-1a 해시</text>
+
+  <rect x="1030" y="552" width="530" height="80" rx="10" fill="#1d2430"/>
+  <text class="bt" x="1046" y="580" style="fill:#ffffff">librocksdb.so (submodule rocksdb/)</text>
+  <text class="bs" x="1046" y="604" style="fill:#c9d4e3">HEAD HashSkipListRep · 기본 SkipListRep</text>
+  <text class="bs" x="1046" y="624" style="fill:#c9d4e3">UPSTREAM rep은 측정기에 내장 · Release -O3</text>
+
+  <rect class="box" x="1030" y="648" width="250" height="84" rx="10"/>
+  <text class="bt" x="1046" y="674">stdout</text>
+  <text class="bs" x="1046" y="698">METRICS_PORT=… · SAMPLE …</text>
+  <text class="bs" x="1046" y="720">RESULT key=value …</text>
+
+  <rect class="box" x="1300" y="648" width="260" height="84" rx="10"/>
+  <text class="bt" x="1316" y="674">TPC-E Trade.txt</text>
+  <text class="bs" x="1316" y="698">28,664,881행 · 3.2GB</text>
+  <text class="bs" x="1316" y="720">저장소에 zstd 조각으로 포함</text>
+
+  <!-- ===== edges ===== -->
+  <!-- browser -> controller -->
+  <path class="edge" d="M330 150 L420 150" marker-end="url(#ar)"/>
+  <!-- controller -> catalog -->
+  <path class="edge" d="M670 148 L690 148" marker-end="url(#ar)"/>
+  <!-- controller -> runservice -->
+  <path class="edge" d="M545 196 L545 212" marker-end="url(#ar)"/>
+  <!-- runservice -> targetrun -->
+  <path class="edge" d="M545 324 L545 340" marker-end="url(#ar)"/>
+  <!-- runservice -> taskset/processes : spawn -->
+  <path class="edge" d="M940 240 L985 240 L985 120 L1030 120" marker-end="url(#ar)"/>
+  <path class="edge" d="M1500 144 L1500 190" marker-end="url(#ar)"/>
+  <!-- pull /metrics -->
+  <path class="pull" d="M1430 336 L1430 328 L990 328 L990 290 L940 290" marker-end="url(#arB)"/>
+  <!-- stdout -> targetrun -->
+  <path class="res" d="M1030 690 L980 690 L980 440 L670 440" marker-end="url(#arG)"/>
+  <!-- snapshot -> browser -->
+  <path class="edge" d="M420 410 L360 410 L360 240 L330 240" marker-end="url(#ar)"/>
+  <!-- data -> producers -->
+  <path class="edge" d="M1430 648 L1430 632"/>
+
+  <!-- edge labels with step numbers -->
+  <g><circle class="num" cx="362" cy="130" r="13"/><text class="numt" x="357" y="135">1</text></g>
+  <text class="el" x="378" y="122">POST</text><text class="els" x="378" y="140">/run</text>
+
+  <g><circle class="num" cx="985" cy="178" r="13"/><text class="numt" x="980" y="183">2</text></g>
+
+  <g><circle cx="1210" cy="328" r="13" fill="#2f6fbf"/><text class="numt" x="1205" y="333">3</text></g>
+
+  <g><circle cx="980" cy="600" r="13" fill="#c26a1b"/><text class="numt" x="975" y="605">4</text></g>
+
+  <g><circle class="num" cx="360" cy="330" r="13"/><text class="numt" x="355" y="335">5</text></g>
+
+  <!-- ===== legend / flow description ===== -->
+  <rect class="zone" x="20" y="520" width="930" height="230" rx="14"/>
+  <text class="zt" x="40" y="556">측정 한 번의 흐름</text>
+  <g font-size="16" fill="#1d2430">
+    <circle class="num" cx="52" cy="586" r="12"/><text class="numt" x="47" y="591">1</text>
+    <text x="76" y="592">"측정 시작" → POST /api/benchmarks/{id}/run. 다른 측정이 진행 중이면 409.</text>
+    <circle class="num" cx="52" cy="620" r="12"/><text class="numt" x="47" y="625">2</text>
+    <text x="76" y="626">RunService가 memtable마다 taskset + perf stat + op_trade_bench 실행.</text>
+    <circle cx="52" cy="654" r="12" style="fill:#2f6fbf"/><text class="numt" x="47" y="659">3</text>
+    <text x="76" y="660">측정기가 알린 포트에서 1초마다 Prometheus 텍스트를 당겨와(pull) 시계열로 쌓음.</text>
+    <circle cx="52" cy="688" r="12" style="fill:#c26a1b"/><text class="numt" x="47" y="693">4</text>
+    <text x="76" y="694">끝나면 stdout의 RESULT 줄(지연, 검증 해시)과 perf 카운터를 붙임.</text>
+    <circle class="num" cx="52" cy="722" r="12"/><text class="numt" x="47" y="727">5</text>
+    <text x="76" y="728">브라우저가 1초마다 GET /run으로 snapshot JSON을 받아 uPlot으로 다시 그림.</text>
+  </g>
+
+  <!-- note on prometheus -->
+  <rect x="20" y="770" width="1560" height="220" rx="14" fill="#eef4fc" stroke="#9fbde3" stroke-width="1.5"/>
+  <text class="zt" x="40" y="806">지표 수집 방식: Prometheus 형식, 서버 없이 직접 pull</text>
+  <g font-size="16" fill="#1d2430">
+    <text x="40" y="840">· 측정기는 Prometheus 텍스트 형식(# HELP / # TYPE / 이름{라벨} 값)으로 /metrics를 노출한다. Prometheus 서버를 따로 두지 않고 Spring 백엔드가 직접 1초마다 긁는다.</text>
+    <text x="40" y="870">· 값은 요청 시점에 계산한다: RocksDB 속성(GetIntProperty), 누적 통계(Statistics의 ticker와 histogram), flush 완료 이벤트(EventListener), 프로세스 CPU와 RSS(/proc).</text>
+    <text x="40" y="900">· 측정기가 끝나 /metrics가 사라져도 최종값을 읽을 수 있도록 같은 내용을 --metrics_dump 파일(final.prom)로 남긴다.</text>
+    <text x="40" y="930">· 백엔드는 직전 수집값과의 차이로 초당 처리량, CPU 사용률, scan/Get 평균 지연을 계산해 1초 간격 시계열을 만든다.</text>
+    <text x="40" y="960">· 세 프로세스는 코어를 나눠 쓰지만 L3 캐시(30MB)와 메모리 대역폭은 공유한다. 보고서의 수치는 5회 측정 평균이다.</text>
+  </g>
+</svg>

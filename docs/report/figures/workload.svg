@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="810" height="1250" viewBox="0 0 810 1250" font-family="NanumSquare, 'Noto Sans CJK KR', sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#2f9e63"/></marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#d0452f"/></marker>
+    <style>
+      .t { font-size: 24px; font-weight: 800; fill: #1d2430; }
+      .s { font-size: 16px; fill: #4a5564; }
+      .k { font-size: 15px; fill: #1d2430; }
+      .kb { font-size: 15px; fill: #1d2430; font-weight: 700; }
+      .node { fill: #ffffff; stroke: #9aa7b8; stroke-width: 1.4; }
+      .new1 { fill: #e2f4ea; stroke: #2f9e63; stroke-width: 2.4; }
+      .new2 { fill: #fbe5e1; stroke: #d0452f; stroke-width: 2.4; }
+      .link { stroke: #9aa7b8; stroke-width: 1.6; }
+      .lbl { font-size: 15px; fill: #5a6676; }
+    </style>
+  </defs>
+  <rect width="810" height="1250" fill="#ffffff"/>
+
+  <!-- left panel -->
+  <rect x="20" y="20" width="770" height="600" rx="14" fill="#f6f8fb" stroke="#c9d2de"/>
+  <text class="t" x="44" y="62">① trade_종목|t_id  →  bucket 안에서 순차 삽입</text>
+  <text class="s" x="44" y="92">Trade.txt는 거래 시각 순서이고 t_id는 시간에 따라 증가한다.</text>
+  <text class="s" x="44" y="116">같은 종목(bucket) 안에서는 새 key가 언제나 가장 크다.</text>
+
+  <text class="lbl" x="44" y="160">bucket IDBE| (같은 종목의 거래)</text>
+  <g>
+    <rect class="node" x="44" y="176" width="150" height="44" rx="8"/><text class="k" x="58" y="204">IDBE|1001</text>
+    <line class="link" x1="194" y1="198" x2="214" y2="198"/>
+    <rect class="node" x="214" y="176" width="150" height="44" rx="8"/><text class="k" x="228" y="204">IDBE|1003</text>
+    <line class="link" x1="364" y1="198" x2="384" y2="198"/>
+    <rect class="node" x="384" y="176" width="150" height="44" rx="8"/><text class="k" x="398" y="204">IDBE|1007</text>
+    <line class="link" x1="534" y1="198" x2="554" y2="198"/>
+    <rect class="new1" x="554" y="176" width="150" height="44" rx="8"/><text class="kb" x="568" y="204">IDBE|1012</text>
+  </g>
+  <path d="M629 290 L629 228" stroke="#2f9e63" stroke-width="2.6" fill="none" marker-end="url(#a)"/>
+  <text class="kb" x="520" y="316" fill="#2f9e63" style="fill:#2f9e63">새 거래: 항상 꼬리에 붙음</text>
+  <text class="s" x="44" y="270">직전 삽입 위치(InlineSkipList seq_splice_,</text>
+  <text class="s" x="44" y="294">SkipList prev_)가 그대로 맞아 탐색을 건너뛴다.</text>
+  <text class="s" x="44" y="318">→ 순차(sequential) 쓰기 워크로드</text>
+
+  <line x1="44" y1="356" x2="766" y2="356" stroke="#d5dce6"/>
+  <text class="lbl" x="44" y="392">같은 KV 흐름을 SKIPLIST(전역 리스트 1개)에 넣으면</text>
+  <g>
+    <rect class="node" x="44" y="408" width="104" height="40" rx="8"/><text class="k" x="54" y="434">EBKR|1004</text>
+    <rect class="node" x="158" y="408" width="104" height="40" rx="8"/><text class="k" x="168" y="434">IDBE|1003</text>
+    <rect class="new2" x="272" y="408" width="104" height="40" rx="8"/><text class="kb" x="280" y="434">IDBE|1012</text>
+    <rect class="node" x="386" y="408" width="104" height="40" rx="8"/><text class="k" x="398" y="434">MME|1002</text>
+    <rect class="new2" x="500" y="408" width="104" height="40" rx="8"/><text class="kb" x="510" y="434">MME|1013</text>
+    <rect class="node" x="614" y="408" width="104" height="40" rx="8"/><text class="k" x="624" y="434">ZION|1006</text>
+  </g>
+  <text class="s" x="44" y="490">연속한 두 거래는 대개 서로 다른 종목(3,425개 중 하나)이라</text>
+  <text class="s" x="44" y="514">삽입 위치가 리스트 곳곳으로 튀고, 매번 처음부터 탐색한다.</text>
+  <text class="s" x="44" y="538">→ 전역으로는 무작위(random) 쓰기</text>
+  <text class="lbl" x="44" y="590">key 26바이트, value 111바이트(평균), 종목당 거래 92 ~ 1,369건(중앙값 569, 앞 200만 행)</text>
+
+  <g transform="translate(-790,610)">
+  <!-- right panel -->
+  <rect x="810" y="20" width="770" height="600" rx="14" fill="#f6f8fb" stroke="#c9d2de"/>
+  <text class="t" x="834" y="62">② trade_종목|계좌|t_id  →  bucket 안에서 무작위 삽입</text>
+  <text class="s" x="834" y="92">bucket(종목) 안이 계좌 번호 순으로 정렬된다.</text>
+  <text class="s" x="834" y="116">거래는 시간순으로 오지만 계좌는 5,000개 중 무작위다.</text>
+
+  <text class="lbl" x="834" y="160">bucket IDBE| (계좌 순 정렬)</text>
+  <g font-size="14">
+    <rect class="node" x="834" y="176" width="172" height="44" rx="8"/><text class="k" x="844" y="204">IDBE|4300001|1003</text>
+    <line class="link" x1="1006" y1="198" x2="1022" y2="198"/>
+    <rect class="new2" x="1022" y="176" width="172" height="44" rx="8"/><text class="kb" x="1032" y="204">IDBE|4300150|1012</text>
+    <line class="link" x1="1194" y1="198" x2="1210" y2="198"/>
+    <rect class="node" x="1210" y="176" width="172" height="44" rx="8"/><text class="k" x="1220" y="204">IDBE|4300420|1001</text>
+    <line class="link" x1="1382" y1="198" x2="1398" y2="198"/>
+    <rect class="node" x="1398" y="176" width="172" height="44" rx="8"/><text class="k" x="1408" y="204">IDBE|4303271|1007</text>
+  </g>
+  <path d="M1108 266 L1108 228" stroke="#d0452f" stroke-width="2.6" fill="none" marker-end="url(#b)"/>
+  <text class="kb" x="1124" y="262" style="fill:#d0452f">새 거래: bucket 중간에 끼어듦</text>
+  <text class="s" x="834" y="300">직전 위치가 맞지 않아 매번 bucket을 위에서부터</text>
+  <text class="s" x="834" y="324">탐색하고, 오래된 노드를 따라간다.</text>
+  <text class="s" x="834" y="318"/>
+
+  <line x1="834" y1="356" x2="1556" y2="356" stroke="#d5dce6"/>
+  <text class="lbl" x="834" y="392">이 형식에서 드러나는 차이</text>
+  <text class="s" x="834" y="426">· 탐색하는 노드마다 key를 비교하므로, 노드와 key가 붙어 있는</text>
+  <text class="s" x="834" y="450">  InlineSkipList(HEAD, SKIPLIST)가 캐시 미스를 덜 낸다.</text>
+  <text class="s" x="834" y="484">· 멀티 스레드 쓰기에서 삽입 위치가 흩어져 스레드끼리 부딪히는</text>
+  <text class="s" x="834" y="508">  일이 적고, 동시 삽입(InsertConcurrently)의 효과가 커진다.</text>
+  <text class="s" x="834" y="542">→ bucket 안 무작위(random) 쓰기 워크로드</text>
+  <text class="lbl" x="834" y="590">key 38바이트, value 111바이트(평균), 계좌 5,000개</text>
+  </g>
+</svg>

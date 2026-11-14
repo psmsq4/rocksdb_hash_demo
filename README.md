@@ -121,44 +121,9 @@ UPSTREAM은 total-order iterator를 열 때마다 memtable 200만 건을 새 Ski
 
 ### 시연 웹
 
-```mermaid
-flowchart LR
-  subgraph Browser["브라우저"]
-    IDX["index.html / app.js<br/>벤치마크 카드 4종, uPlot 그래프"]
-    ARCH["architecture.html / arch.js<br/>HEAD vs UPSTREAM 애니메이션"]
-  end
+![벤치마크 웹 서버 아키텍처](docs/report/figures/arch_web.png)
 
-  subgraph Spring["Spring Boot :8181"]
-    BC["BenchController<br/>/api/benchmarks"]
-    WC["WorkloadController<br/>/api/workload"]
-    CAT["BenchmarkCatalog<br/>카드 정의, 카드별 설정"]
-    RS["RunService<br/>실행 1개씩, 1초마다 수집"]
-    TR["TargetRun x3<br/>시계열, RESULT, perf, 로그"]
-    WP["WorkloadProfile<br/>Trade.txt 앞 200만 행 분석"]
-  end
-
-  subgraph Bench["op_trade_bench x3 (perf stat + taskset, 동시 실행)"]
-    H["HEAD<br/>코어 2-5"]
-    U["UPSTREAM<br/>코어 6-9<br/>(upstream rep 내장)"]
-    S["SKIPLIST<br/>코어 10-13"]
-  end
-
-  LIB["librocksdb.so<br/>submodule rocksdb/"]
-  DATA[("TPC-E Trade.txt")]
-
-  IDX -->|"1초마다 GET run, POST run, PUT settings"| BC
-  IDX -->|"GET workload"| WC
-  BC --> CAT
-  BC --> RS
-  WC --> WP
-  RS -->|"프로세스 실행"| Bench
-  RS -->|"1초마다 GET /metrics"| Bench
-  Bench -->|"stdout: METRICS_PORT, SAMPLE, RESULT"| TR
-  RS --> TR
-  Bench --> LIB
-  DATA --> Bench
-  DATA --> WP
-```
+원본: [`docs/report/figures/arch_web.svg`](docs/report/figures/arch_web.svg). 이전 Mermaid 버전은 [`docs/diagrams/web_architecture.mmd`](docs/diagrams/web_architecture.mmd)
 
 - 카드의 "측정 시작"을 누르면 `RunService`가 세 memtable로 `op_trade_bench`를 동시에 띄운다. 각 프로세스는 빈 포트에 Prometheus 형식 `/metrics`를 열고, 백엔드가 1초마다 읽어 시계열로 쌓는다.
 - 끝나면 마지막 `RESULT key=value ...` 줄(지연 분위수, scan/Get 결과, 검증 해시)과 `perf stat` 카운터를 붙여 둔다. 페이지는 1초마다 `GET /api/benchmarks/{id}/run`으로 받아 그린다.
@@ -166,21 +131,9 @@ flowchart LR
 
 ### HashSkipListRep (HEAD)
 
-```mermaid
-flowchart TB
-  K["Insert(key)"] --> T["Transform: 첫 | 까지 = prefix"]
-  T --> HB["hash(prefix) % 100만 → buckets_[i]"]
-  HB -->|"비어 있음"| NEW["HashBucket 생성, CAS로 설치"]
-  HB -->|"있음"| KP{"bucket.known_prefix == prefix?"}
-  NEW --> KP
-  KP -->|"같음, 대부분"| INS["bucket InlineSkipList 삽입<br/>(동시 삽입 가능)"]
-  KP -->|"다름, 새 종목/해시 충돌"| AP["prefix_list_ 탐색, 없으면 정렬 삽입<br/>known_prefix 갱신(release)"]
-  AP --> INS
+<p align="center"><img src="docs/report/figures/head_flow.png" alt="HEAD HashSkipListRep 삽입과 순회 흐름" width="460"></p>
 
-  IT["flush / total-order iterator"] --> PL["prefix_list_ 순서로 prefix 순회"]
-  PL --> BK["prefix마다 그 bucket의 해당 범위 읽기"]
-  BK -->|"prefix가 바뀌면"| PL
-```
+원본: [`docs/diagrams/head_insert_iterate.mmd`](docs/diagrams/head_insert_iterate.mmd) (Mermaid)
 
 시연 웹의 "아키텍처" 메뉴에서 삽입, flush, prefix scan, total-order scan, 멀티 스레드 쓰기, 해시 충돌을 HEAD와 UPSTREAM이 나란히 움직이는 애니메이션으로 볼 수 있다.
 
