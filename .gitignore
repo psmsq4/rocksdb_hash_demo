@@ -5,3 +5,4 @@ bench/out/
 op_trade_bench/out/
 # 3.2GB; the repository keeps it compressed in op_trade_bench/data/
 op_trade_bench/Trade.txt
+docs/report/node_modules/

@@ -2,6 +2,9 @@
 
 ## 개요
 
+* [결과 보고서](./결과_보고서.pdf)
+* [시연 영상](https://youtu.be/QRP4d7eSOYo)
+
 HashSkipList는 RocksDB가 기본 제공하는 Memtable 구현 중 하나였으나, 다음 세 가지 문제로 기피되어 왔다.
 * 멀티 스레드 불가
 * 느린 Range Query 성능(종목을 넘는 total-order 조회와 flush 때마다 Memtable 전체 복사, 사실상 운영에서 사용 불가능한 수준)
