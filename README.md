@@ -2,7 +2,8 @@
 
 ## 개요
 
-* [결과 보고서](./결과_보고서.pdf)
+* [결과 보고서](./docs/report/결과_보고서.pdf)
+* [포스터](./docs/poster/HASH_Rocksdb_poster_90x140cm.pdf)
 * [시연 영상](https://youtu.be/QRP4d7eSOYo)
 
 HashSkipList는 RocksDB가 기본 제공하는 Memtable 구현 중 하나였으나, 다음 세 가지 문제로 기피되어 왔다.
